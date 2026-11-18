@@ -11,7 +11,7 @@
 //!   `book` product + `trade`.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     net::IpAddr,
     sync::{atomic::Ordering, Arc},
     time::{Duration, Instant},
@@ -350,6 +350,16 @@ pub struct TobProcessor {
     /// `Trade` for the key (both carry one). See the module-level deferral note on
     /// [`MboProcessor::revealed`] for the full design; this is TOB's instance of the same pattern.
     revealed: HashMap<(IpAddr, u32), u16>,
+    /// The receiver's category, interned once (see [`Self::category_for`]).
+    category: Option<(&'static str, Arc<str>)>,
+    /// Every wire Source ID this publisher's instruments have been filed under, per canonical
+    /// channel: what a reset of that channel drops quotes by. Kept apart from `revealed` because a
+    /// `ChannelReset` clears `revealed` for every channel of the publisher while dropping quotes on
+    /// its own channel only, and a later reset of another channel must still find its IDs.
+    /// Written on the refdata path (a reveal, or a definition moving an already revealed
+    /// instrument), never per quote. Bounded like `revealed`: dropped when the publisher is
+    /// evicted.
+    channel_sources: HashMap<(IpAddr, u8), HashSet<SourceKey>>,
     /// The channel `InstrumentDefinition` most recently arrived on for `(publisher, instrument)` —
     /// remembered because the deferred `NormalizedInstrument`, emitted once a price message
     /// reveals the instrument, is built outside that definition's own datagram and so no longer has
@@ -380,6 +390,23 @@ impl TobProcessor {
             seq_events: SeqEvents::default(),
             revealed: HashMap::new(),
             pending_channel: HashMap::new(),
+            category: None,
+            channel_sources: HashMap::new(),
+        }
+    }
+
+    /// This receiver's category as the interned `Arc` a quote carries, resolved once rather than per
+    /// quote: `category_arc` takes a process-wide read lock and a hash lookup, which every quote
+    /// would otherwise pay whether or not anything files it. Keyed on the string so a context that
+    /// names another category still gets its own.
+    fn category_for(&mut self, category: &'static str) -> Arc<str> {
+        match &self.category {
+            Some((c, arc)) if std::ptr::eq(*c, category) => arc.clone(),
+            _ => {
+                let arc = category_arc(category);
+                self.category = Some((category, arc.clone()));
+                arc
+            }
         }
     }
 
@@ -425,8 +452,19 @@ impl TobProcessor {
                 channel,
                 instrument_id,
             );
+            // The latest values filed under the old ID go with its catalog entry.
+            lock(ctx.arbiter).forget_values(&(
+                SourceKey::from_id(old_id),
+                category_arc(ctx.category),
+                channel,
+                instrument_id,
+            ));
         }
         self.revealed.insert(key, source_id);
+        self.channel_sources
+            .entry((ctx.publisher, channel))
+            .or_default()
+            .insert(SourceKey::from_id(source_id));
         let source = venue_arc(source_label(source_id));
         let inst = NormalizedInstrument {
             venue: source.clone(),
@@ -457,6 +495,25 @@ impl TobProcessor {
         self.revealed.retain(|(p, _), _| *p != publisher);
         self.pending_channel.retain(|(p, _), _| *p != publisher);
     }
+
+    /// The channel's quotes in the latest-values map end with its session or reset: one kept would
+    /// stand in for a live quote on a channel that is still up. Matched on the Source IDs this
+    /// publisher's instruments were filed under on that channel (`channel_sources`), never on the
+    /// row's venue — the wire ID is authoritative and can name another source. The last trade
+    /// stays; it is still the last trade.
+    fn forget_channel_quotes(&self, ctx: &DatagramCtx, wire_channel: u8) {
+        let channel = ctx.canonical_channel(wire_channel);
+        let Some(source_ids) = self.channel_sources.get(&(ctx.publisher, channel)) else {
+            return;
+        };
+        lock(ctx.arbiter).forget_source_channel_values(
+            source_ids,
+            ctx.category,
+            channel,
+            true,
+            false,
+        );
+    }
 }
 
 impl DatagramProcessor for TobProcessor {
@@ -484,6 +541,9 @@ impl DatagramProcessor for TobProcessor {
             // `pending_channel` entries in the same pass, or they outlive `state` forever.
             if let Some(evicted) = self.state.take_evicted() {
                 self.forget_publisher(evicted);
+                // Not part of `forget_publisher`, which a `ChannelReset` also runs: those IDs must
+                // outlive a reset (see `channel_sources`), but not the publisher.
+                self.channel_sources.retain(|(p, _), _| *p != evicted);
             }
         }
 
@@ -519,6 +579,10 @@ impl DatagramProcessor for TobProcessor {
                         sequence = header.sequence,
                         "quote channel reset; sequence restarted"
                     );
+                    // A new publisher era, whether or not its `ChannelReset` reached us: quotes
+                    // from the old one must not stand in for live ones. This datagram's own quotes
+                    // are processed below, after the drop.
+                    self.forget_channel_quotes(ctx, header.channel_id);
                     true
                 }
                 SeqCheck::First | SeqCheck::Ok | SeqCheck::Bounded | SeqCheck::Reseat => true,
@@ -570,6 +634,11 @@ impl DatagramProcessor for TobProcessor {
                     let channel = ctx.canonical_channel(header.channel_id);
                     self.pending_channel.insert(key, channel);
                     if let Some(&source_id) = self.revealed.get(&key) {
+                        // Quotes for this instrument now file under this channel.
+                        self.channel_sources
+                            .entry((ctx.publisher, channel))
+                            .or_default()
+                            .insert(SourceKey::from_id(source_id));
                         if d.source_id.is_none() || d.source_id == Some(source_id) {
                             let source = venue_arc(source_label(source_id));
                             let inst = NormalizedInstrument {
@@ -599,6 +668,8 @@ impl DatagramProcessor for TobProcessor {
                 }
                 Message::ChannelReset(ts) if handle_refdata => {
                     warn!(ts, "channel reset; discarding reference-data state");
+                    // Before `forget_publisher` below clears what this publisher revealed.
+                    self.forget_channel_quotes(ctx, header.channel_id);
                     // A channel reset belongs to the publisher that sent it, not the port block.
                     *self.state.get(ctx.publisher) = RefDataState::new();
                     // The whole definition set just went with it; the old Source ID must not
@@ -608,6 +679,7 @@ impl DatagramProcessor for TobProcessor {
                 }
                 Message::EndOfSession(ts) if handle_refdata => {
                     info!(ts, "end of session");
+                    self.forget_channel_quotes(ctx, header.channel_id);
                 }
                 Message::Quote(q) if handle_quotes && quotes_fresh => {
                     // Per-instrument readiness: emit a quote as soon as we hold *this*
@@ -637,6 +709,14 @@ impl DatagramProcessor for TobProcessor {
                     // other).
                     let venue: &'static str = source_label(q.source_id);
                     let source = venue_arc(venue);
+                    // The channel this instrument was announced under, read after the reveal call
+                    // above exactly as the trade branch does, so the quote names the catalog's
+                    // identity and lands at the same key as the instrument's book.
+                    let channel = self
+                        .pending_channel
+                        .get(&(ctx.publisher, q.instrument_id))
+                        .copied()
+                        .unwrap_or(0);
                     let quote = NormalizedQuote {
                         venue: source.clone(),
                         source_name: source.clone(),
@@ -653,6 +733,9 @@ impl DatagramProcessor for TobProcessor {
                         kernel_rx_ts_ns: ctx.kernel_rx_ts_ns,
                         ws_send_ts_ns: 0, // stamped by the WS server just before send
                         venue_update_id: q.venue_update_id,
+                        channel,
+                        instrument_id: q.instrument_id,
+                        category: self.category_for(ctx.category),
                         // The update id's comparison scope and exact content: the canonical
                         // channel (a mirror's offset channel keys with its primary) and the raw
                         // integers under the exponents they were scaled with.
@@ -4549,6 +4632,346 @@ mod tests {
             );
         }
         assert_eq!(wires[0], wires[1], "one market, one scale, one channel");
+    }
+
+    /// Minimal TOB `Trade` message (52 bytes), matching `codec::tests::encode_trade_datagram`.
+    fn enc_tob_trade(instrument_id: u32, source_id: u16, trade_id: u64) -> Vec<u8> {
+        let mut b = vec![crate::ingest::codec::MSG_TRADE, 52u8, 0, 0];
+        b.extend_from_slice(&instrument_id.to_le_bytes());
+        b.extend_from_slice(&source_id.to_le_bytes());
+        b.push(1); // aggressor: buy
+        b.push(0); // trade flags
+        b.extend_from_slice(&1_000u64.to_le_bytes()); // source_ts
+        b.extend_from_slice(&100i64.to_le_bytes()); // price
+        b.extend_from_slice(&5u64.to_le_bytes()); // qty
+        b.extend_from_slice(&trade_id.to_le_bytes());
+        b.extend_from_slice(&0u64.to_le_bytes()); // cumulative volume
+        b
+    }
+
+    /// Minimal TOB `EndOfSession` message (12 bytes), the same shape as `ChannelReset`.
+    fn enc_tob_end_of_session(ts: u64) -> Vec<u8> {
+        let mut b = vec![crate::ingest::codec::MSG_END_OF_SESSION, 12u8, 0, 0];
+        b.extend_from_slice(&ts.to_le_bytes());
+        b
+    }
+
+    /// A top-of-book processor with the latest-values map wired, holding a quote and a trade for
+    /// instrument 41 on channel 1 and instrument 42 on channel 2, all under Source ID `source_id`.
+    /// Returns the next free datagram sequence.
+    fn tob_with_values_on_two_channels(
+        arbiter: &SharedArbiter,
+        instruments: &crate::model::InstrumentSnapshot,
+        source_id: u16,
+    ) -> (TobProcessor, crate::model::QuoteMap, u64) {
+        let map: crate::model::QuoteMap = Arc::new(Mutex::new(HashMap::new()));
+        lock(arbiter).set_quote_map(map.clone());
+        let mut proc = TobProcessor::new(tape(true));
+        let ctx = |role| make_ctx(arbiter, instruments, role);
+        let mut seq = 0;
+        for (channel, id) in [(1u8, 41u32), (2, 42)] {
+            proc.on_datagram(
+                &tob_datagram_on_channel(
+                    channel,
+                    seq,
+                    &[
+                        enc_manifest_summary(1, 2),
+                        enc_instrument_def(id, &format!("MARKET-{id}"), 1),
+                    ],
+                ),
+                &ctx(PortRole::Refdata),
+            );
+            proc.on_datagram(
+                &tob_datagram_on_channel(
+                    channel,
+                    seq + 1,
+                    &[
+                        enc_tob_quote(id, source_id, 1_000 + u64::from(id)),
+                        enc_tob_trade(id, source_id, u64::from(id)),
+                    ],
+                ),
+                &ctx(PortRole::Mktdata),
+            );
+            seq += 2;
+        }
+        (proc, map, seq)
+    }
+
+    /// The key the map files `(source_id, channel, instrument_id)` under for `make_ctx`'s category.
+    fn values_key(source_id: u16, channel: u8, instrument_id: u32) -> crate::model::BookKey {
+        (
+            crate::model::SourceKey::from_id(source_id),
+            category_arc("testcategory"),
+            channel,
+            instrument_id,
+        )
+    }
+
+    /// `(has quote, has trade)` for one key, `None` when the key holds no entry.
+    fn values_at(
+        map: &crate::model::QuoteMap,
+        key: &crate::model::BookKey,
+    ) -> Option<(bool, bool)> {
+        crate::model::lock(map)
+            .get(key)
+            .map(|v| (v.quote.is_some(), v.trade.is_some()))
+    }
+
+    /// Send `message` from the refdata port on `channel`.
+    fn tob_refdata_on(
+        proc: &mut TobProcessor,
+        arbiter: &SharedArbiter,
+        instruments: &crate::model::InstrumentSnapshot,
+        channel: u8,
+        seq: u64,
+        message: Vec<u8>,
+    ) {
+        proc.on_datagram(
+            &tob_datagram_on_channel(channel, seq, &[message]),
+            &make_ctx(arbiter, instruments, PortRole::Refdata),
+        );
+    }
+
+    /// A channel reset ends what the publisher was quoting on that channel: a quote from before it
+    /// must not stand in for a live one. The last trade is still the last trade, and the other
+    /// channel is untouched.
+    #[test]
+    fn tob_channel_reset_drops_its_quotes_and_keeps_trades() {
+        let (arbiter, _rx, instruments) = mbp_harness();
+        let (mut proc, map, seq) = tob_with_values_on_two_channels(&arbiter, &instruments, 1);
+        assert_eq!(values_at(&map, &values_key(1, 1, 41)), Some((true, true)));
+        tob_refdata_on(
+            &mut proc,
+            &arbiter,
+            &instruments,
+            1,
+            seq,
+            enc_tob_channel_reset(9),
+        );
+        assert_eq!(values_at(&map, &values_key(1, 1, 41)), Some((false, true)));
+        assert_eq!(values_at(&map, &values_key(1, 2, 42)), Some((true, true)));
+    }
+
+    #[test]
+    fn tob_end_of_session_drops_its_quotes_and_keeps_trades() {
+        let (arbiter, _rx, instruments) = mbp_harness();
+        let (mut proc, map, seq) = tob_with_values_on_two_channels(&arbiter, &instruments, 1);
+        tob_refdata_on(
+            &mut proc,
+            &arbiter,
+            &instruments,
+            1,
+            seq,
+            enc_tob_end_of_session(9),
+        );
+        assert_eq!(values_at(&map, &values_key(1, 1, 41)), Some((false, true)));
+        assert_eq!(values_at(&map, &values_key(1, 2, 42)), Some((true, true)));
+    }
+
+    /// The reset is matched on the Source IDs this publisher revealed, never on the row's venue:
+    /// the wire Source ID is authoritative and can name a source other than the row's. Here the row
+    /// is `"TV"` and the quotes are filed under Source ID 1's name, so a row-venue match would drop
+    /// nothing and leave the pre-reset quote standing on a live channel. A Source ID this publisher
+    /// never revealed is not its to drop.
+    #[test]
+    fn tob_reset_matches_the_revealed_source_id_not_the_row_venue() {
+        let (arbiter, _rx, instruments) = mbp_harness();
+        let (mut proc, map, seq) = tob_with_values_on_two_channels(&arbiter, &instruments, 1);
+        assert_ne!(
+            crate::ingest::sources::source_label(1),
+            make_ctx(&arbiter, &instruments, PortRole::Refdata).venue,
+            "fixture: the row venue and the wire Source ID differ"
+        );
+        let other = values_key(5, 1, 99);
+        crate::model::lock(&map).insert(
+            other.clone(),
+            crate::ingest::quote_map::LatestValues {
+                quote: Some(crate::ingest::quote_map::QuoteEntry {
+                    bid: 1.0,
+                    ask: 2.0,
+                    bid_size: 1.0,
+                    ask_size: 1.0,
+                    bid_n: 0,
+                    ask_n: 0,
+                    source_ts_ns: 0,
+                    venue_update_id: 0,
+                    as_of_ns: 1,
+                }),
+                trade: None,
+            },
+        );
+        tob_refdata_on(
+            &mut proc,
+            &arbiter,
+            &instruments,
+            1,
+            seq,
+            enc_tob_channel_reset(9),
+        );
+        assert_eq!(values_at(&map, &values_key(1, 1, 41)), Some((false, true)));
+        assert_eq!(values_at(&map, &other), Some((true, false)));
+    }
+
+    /// A `ChannelReset` discards the publisher's reveals on every channel, but drops quotes only on
+    /// its own. A second reset, on another channel and before anything is revealed again, must
+    /// still find the Source IDs that channel's quotes were filed under.
+    #[test]
+    fn consecutive_channel_resets_each_drop_their_quotes() {
+        let (arbiter, _rx, instruments) = mbp_harness();
+        let (mut proc, map, seq) = tob_with_values_on_two_channels(&arbiter, &instruments, 1);
+        tob_refdata_on(
+            &mut proc,
+            &arbiter,
+            &instruments,
+            1,
+            seq,
+            enc_tob_channel_reset(9),
+        );
+        tob_refdata_on(
+            &mut proc,
+            &arbiter,
+            &instruments,
+            2,
+            seq + 1,
+            enc_tob_channel_reset(10),
+        );
+        assert_eq!(values_at(&map, &values_key(1, 1, 41)), Some((false, true)));
+        assert_eq!(values_at(&map, &values_key(1, 2, 42)), Some((false, true)));
+    }
+
+    /// A publisher restart shows as a new `Reset Count` on the market-data header even when its
+    /// explicit `ChannelReset` is lost. An instrument not quoted again since must not keep its
+    /// pre-restart quote on a channel that reads as live. Its trade stays.
+    #[test]
+    fn a_header_reset_count_change_drops_the_channels_quotes() {
+        let (arbiter, _rx, instruments) = mbp_harness();
+        let (mut proc, map, seq) = tob_with_values_on_two_channels(&arbiter, &instruments, 1);
+        let mut restarted = tob_datagram_on_channel(1, seq, &[]);
+        restarted[21] = 1; // Reset Count: a new publisher era on channel 1
+        proc.on_datagram(
+            &restarted,
+            &make_ctx(&arbiter, &instruments, PortRole::Mktdata),
+        );
+        assert_eq!(values_at(&map, &values_key(1, 1, 41)), Some((false, true)));
+        assert_eq!(values_at(&map, &values_key(1, 2, 42)), Some((true, true)));
+    }
+
+    /// A top-of-book instrument that moves to another Source ID leaves no quote behind under the old
+    /// one: the catalog entry it was announced under is already removed, and the map follows it.
+    #[test]
+    fn tob_source_id_change_drops_the_old_ids_values() {
+        let (arbiter, _rx, instruments) = mbp_harness();
+        let (mut proc, map, seq) = tob_with_values_on_two_channels(&arbiter, &instruments, 1);
+        proc.on_datagram(
+            &tob_datagram_on_channel(1, seq, &[enc_tob_quote(41, 2, 5_000)]),
+            &make_ctx(&arbiter, &instruments, PortRole::Mktdata),
+        );
+        assert_eq!(values_at(&map, &values_key(1, 1, 41)), None);
+        assert_eq!(values_at(&map, &values_key(2, 1, 41)), Some((true, false)));
+    }
+
+    /// Drain every quote off `rx`.
+    fn drain_quotes(
+        rx: &mut broadcast::Receiver<std::sync::Arc<FeedMessage>>,
+    ) -> Vec<crate::model::NormalizedQuote> {
+        let mut quotes = Vec::new();
+        while let Ok(m) = rx.try_recv() {
+            if let FeedMessage::Quote(q) = &*m {
+                quotes.push(q.clone());
+            }
+        }
+        quotes
+    }
+
+    /// A top-of-book quote carries the identity its instrument was announced under — the wire id,
+    /// the channel the `instrument` message names, and the row's category — so it can be filed
+    /// under the same key as the instrument's catalog entry and book.
+    #[test]
+    fn tob_quote_carries_its_instrument_identity() {
+        let (arbiter, mut rx, instruments) = mbp_harness();
+        let mut proc = TobProcessor::new(tape(false));
+        let ctx = |role| make_ctx(&arbiter, &instruments, role);
+        proc.on_datagram(
+            &tob_datagram_on_channel(
+                5,
+                0,
+                &[
+                    enc_manifest_summary(1, 1),
+                    enc_instrument_def(41, "MARKET-X", 1),
+                ],
+            ),
+            &ctx(PortRole::Refdata),
+        );
+        proc.on_datagram(
+            &tob_datagram_on_channel(5, 1, &[enc_tob_quote(41, 1, 1_000)]),
+            &ctx(PortRole::Mktdata),
+        );
+        let mut announced = None;
+        let mut quotes = Vec::new();
+        while let Ok(m) = rx.try_recv() {
+            match &*m {
+                FeedMessage::Instrument(i) => announced = Some(i.channel),
+                FeedMessage::Quote(q) => quotes.push(q.clone()),
+                _ => {}
+            }
+        }
+        assert_eq!(quotes.len(), 1, "{quotes:?}");
+        let q = &quotes[0];
+        assert_eq!(q.instrument_id, 41);
+        assert_eq!(Some(q.channel), announced, "the announced channel");
+        assert_eq!(q.channel, 5);
+        assert_eq!(&*q.category, "testcategory");
+    }
+
+    /// One instrument served by a top-of-book row and a market-by-price row on one channel lands at
+    /// ONE key: the quote's identity and the book's key agree, or the two would split the
+    /// instrument and no lookup could ever compare them. Covers a mirror publisher on the
+    /// top-of-book side too, whose offset channel must fold back to the book's.
+    #[test]
+    fn tob_quote_and_mbp_book_share_one_key() {
+        for mirror in [None, Some(100u8)] {
+            let (arbiter, mut rx, instruments) = mbp_harness();
+            let books: crate::model::BookSnapshot = Arc::new(Mutex::new(Default::default()));
+            lock(&arbiter).set_book_replay(books.clone());
+            let book_pub = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 9));
+            let _mbp = mbp_revealed_under(&arbiter, &instruments, book_pub, 1);
+
+            let mut tob = TobProcessor::new(tape(false));
+            let wire_channel = mirror.unwrap_or(0);
+            let ctx = |role| {
+                let mut c = make_ctx(&arbiter, &instruments, role);
+                c.mirror_offset = mirror;
+                c
+            };
+            tob.on_datagram(
+                &tob_datagram_on_channel(
+                    wire_channel,
+                    0,
+                    &[
+                        enc_manifest_summary(1, 1),
+                        enc_instrument_def(41, "MARKET-X", 1),
+                    ],
+                ),
+                &ctx(PortRole::Refdata),
+            );
+            tob.on_datagram(
+                &tob_datagram_on_channel(wire_channel, 1, &[enc_tob_quote(41, 1, 1_000)]),
+                &ctx(PortRole::Mktdata),
+            );
+            let quotes = drain_quotes(&mut rx);
+            assert_eq!(quotes.len(), 1, "mirror {mirror:?}: {quotes:?}");
+            let q = &quotes[0];
+            let key = (
+                crate::model::SourceKey::of(q),
+                q.category.clone(),
+                q.channel,
+                q.instrument_id,
+            );
+            assert!(
+                crate::model::lock(&books).get(&key).is_some(),
+                "mirror {mirror:?}: quote key {key:?} has no book"
+            );
+        }
     }
 
     /// **The mirror finding, midpoint.** The same canonicalization
