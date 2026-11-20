@@ -57,10 +57,8 @@ impl Bridge {
             // `--ws-bind` is per test. `--test-threads=1` serializes within one test binary but not
             // across them, and cargo runs the binaries concurrently, so any two spawned bridges —
             // in `e2e`, `ws_input_arbitrage`, `phoenix_arbitrage` — race for those two ports and
-            // whichever loses reports a bind failure. No test here drives either surface; a test
-            // that wants one should pass its own bind on a port it owns.
-            "--api-bind",
-            "",
+            // whichever loses reports a bind failure. A test that wants one passes its own bind on
+            // a port it owns in `extra_args`, which replaces this one.
             "--admin-bind",
             "",
             // Pinned rather than the compiled-in copy, which tracks the hosted document and moves
@@ -71,6 +69,9 @@ impl Bridge {
             "--feed-registry-url",
             "",
         ];
+        if !extra_args.contains(&"--api-bind") {
+            args.extend_from_slice(&["--api-bind", ""]);
+        }
         args.extend_from_slice(extra_args);
         let mut child = Command::new(bin)
             .args(&args)
@@ -108,6 +109,10 @@ impl Bridge {
         let bridge = Self { child, ws_addr };
         bridge.wait_ready(Duration::from_secs(10), ready_flag);
         bridge
+    }
+
+    pub fn running(&mut self) -> bool {
+        self.child.try_wait().expect("polling the bridge").is_none()
     }
 
     fn wait_ready(&self, timeout: Duration, ready_flag: Arc<(Mutex<bool>, Condvar)>) {
