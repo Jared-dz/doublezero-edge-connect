@@ -30,7 +30,7 @@
 #   DZ_LEDGER_RPC_URL=<url>              override the DoubleZero ledger RPC used by the pre-check
 #
 # Any other bridge env var set in the environment is relayed straight to the container
-# (WS_*, HL_WS_BIND, DZ_IFACE, DZ_SHRED_*, METRICS_BIND, DZ_CHANNELS, DZ_ADMIN_BIND, DZ_FEED_REGISTRY[_URL],
+# (WS_*, HL_WS_BIND, BINANCE_WS_BIND, DZ_IFACE, DZ_SHRED_*, METRICS_BIND, DZ_CHANNELS, DZ_ADMIN_BIND, DZ_FEED_REGISTRY[_URL],
 # RUST_LOG, ...), so every binary feature can be tuned from the one-liner, e.g.:
 #   WS_BIND=0.0.0.0:9000 curl -fsSL https://get.doublezero.xyz/connect-testnet | bash
 #
@@ -627,7 +627,7 @@ PASSTHROUGH=(
   DZ_SUBSCRIPTION_REFRESH_SECS DZ_SUBSCRIPTION_GATING_DISABLE DZ_QUOTE_MAP
   WS_HEARTBEAT_SECS WS_IDLE_TIMEOUT_SECS WS_MAX_CLIENTS
   WS_MAX_SUBS WS_MAX_INBOUND_PER_MIN WS_BROADCAST_CAPACITY
-  HL_WS_BIND DZ_API_BIND METRICS_BIND
+  HL_WS_BIND BINANCE_WS_BIND DZ_API_BIND METRICS_BIND
   DZ_CHANNELS DZ_ADMIN_BIND DZ_FEED_REGISTRY DZ_FEED_REGISTRY_URL
   WS_INPUT_URL WS_INPUT_COINS PHOENIX_WS_INPUT_URL PHOENIX_WS_INPUT_MARKETS
   DZ_ARB_LEADER_TIMEOUT_SECS DZ_ARB_TRANSFER_MARGIN_US DZ_ARB_TRANSFER_WIN_RATE
@@ -752,9 +752,24 @@ fi
 # ----------------------------------------------------------------------------
 # 8. status + management hints
 # ----------------------------------------------------------------------------
-HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"; HOST_IP="${HOST_IP:-localhost}"
+HOST_IPS="$(hostname -I 2>/dev/null || true)"
+# A wildcard bind prints as this host's first address of the same family: an IPv4-only listener
+# is unreachable at an IPv6 address, and the reverse.
+url_host() {
+  local ip
+  case "$1" in
+    ''|0.0.0.0)
+      for ip in $HOST_IPS; do case "$ip" in *:*) ;; *) printf '%s' "$ip"; return ;; esac; done
+      printf '127.0.0.1' ;;
+    '[::]')
+      for ip in $HOST_IPS; do case "$ip" in *:*) printf '[%s]' "$ip"; return ;; esac; done
+      printf '[::1]' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
 # Reflect any WS_BIND override in the printed URL (take the port after the last colon).
 [ -n "${WS_BIND:-}" ]  && WS_PORT="${WS_BIND##*:}"
+ws_host="$(url_host "${WS_BIND:+${WS_BIND%:*}}")"
 echo
 # Brief pause so the freshly-connected tunnel settles before we read status.
 spin_sleep 5 "Waiting for the tunnel to settle"
@@ -831,13 +846,13 @@ else
   done
   if [ -n "$ws_up" ]; then
     info "Done. The bridge is serving normalized quotes:"
-    echo "  WebSocket : ws://${HOST_IP}:${WS_PORT}            # normalized quotes (see PROTOCOL.md)"
+    echo "  WebSocket : ws://${ws_host}:${WS_PORT}            # normalized quotes (see PROTOCOL.md)"
   elif [ -n "$shreds_up" ]; then
     info "Done. Forwarding shreds. The WebSocket quote sink is idle -- it activates once this host is subscribed to a market-data feed."
-    echo "  WebSocket : ws://${HOST_IP}:${WS_PORT}            # activates once >=1 market-data feed is subscribed"
+    echo "  WebSocket : ws://${ws_host}:${WS_PORT}            # activates once >=1 market-data feed is subscribed"
   else
     info "Done. Connected. The WebSocket sink and shred forwarder each activate automatically once this host is subscribed to a group (a market-data feed for WS; an edge-solana-* group for shreds) -- allow up to one refresh interval (DZ_SUBSCRIPTION_REFRESH_SECS, default 30s). Check: sudo docker logs $DZ_NAME"
-    echo "  WebSocket : ws://${HOST_IP}:${WS_PORT}            # once >=1 market-data feed is subscribed"
+    echo "  WebSocket : ws://${ws_host}:${WS_PORT}            # once >=1 market-data feed is subscribed"
   fi
 fi
 # The Hyperliquid-compatible sink is not subscription-gated: it binds at bridge start, and a failed
@@ -845,12 +860,23 @@ fi
 # confirm it, since the likeliest failure is another process holding that port.
 if [ "$CONNECT_STATE" = connected ] && [ -n "${HL_WS_BIND:-}" ]; then
   hl_log="$($SUDO docker logs "$DZ_NAME" 2>&1 | grep -E "Hyperliquid-compatible (WebSocket sink listening|sink disabled)" | tail -1 | sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' || true)"
-  hl_host="${HL_WS_BIND%:*}"
-  case "$hl_host" in ''|0.0.0.0|'[::]') hl_host="$HOST_IP" ;; esac
+  hl_host="$(url_host "${HL_WS_BIND%:*}")"
   case "$hl_log" in
     *"sink listening"*) echo "  Hyperliquid : ws://${hl_host}:${HL_WS_BIND##*:}            # Hyperliquid's own schema (docs/output-sinks.md)" ;;
     *"sink disabled"*) warn "The Hyperliquid-compatible sink is NOT serving (HL_WS_BIND=$HL_WS_BIND): ${hl_log#*sink disabled: }" ;;
     *) warn "Could not confirm the Hyperliquid-compatible sink on $HL_WS_BIND: neither its bind nor a bind failure is in the bridge log (RUST_LOG may hide them). Check: sudo docker logs $DZ_NAME | grep Hyperliquid" ;;
+  esac
+fi
+# The Binance-compatible sink is advertised the same way. It serves one matching engine per path.
+if [ "$CONNECT_STATE" = connected ] && [ -n "${BINANCE_WS_BIND:-}" ]; then
+  bn_log="$($SUDO docker logs "$DZ_NAME" 2>&1 | grep -E "Binance-compatible (WebSocket sink listening|sink disabled)" | tail -1 | sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' || true)"
+  bn_host="$(url_host "${BINANCE_WS_BIND%:*}")"
+  case "$bn_log" in
+    *"sink listening"*)
+      echo "  Binance USD-M : ws://${bn_host}:${BINANCE_WS_BIND##*:}/usdsm      # Binance's own schema (docs/output-sinks.md)"
+      echo "  Binance spot  : ws://${bn_host}:${BINANCE_WS_BIND##*:}/spot" ;;
+    *"sink disabled"*) warn "The Binance-compatible sink is NOT serving (BINANCE_WS_BIND=$BINANCE_WS_BIND): ${bn_log#*sink disabled: }" ;;
+    *) warn "Could not confirm the Binance-compatible sink on $BINANCE_WS_BIND: neither its bind nor a bind failure is in the bridge log (RUST_LOG may hide them). Check: sudo docker logs $DZ_NAME | grep Binance" ;;
   esac
 fi
 echo
