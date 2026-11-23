@@ -30,11 +30,13 @@ The Hyperliquid-, Binance- and Kalshi-compatible sinks also ship a non-empty def
 
 Serves the same market data in **Hyperliquid's own WebSocket schema** instead of
 [PROTOCOL.md](../PROTOCOL.md)'s, so an existing Hyperliquid client consumes edge-connect by changing
-one URL. It is **on by default at loopback** (`127.0.0.1:8082`), since it has no TLS or authentication; bind a wildcard to serve a client on another host, or pass an empty value to turn it off:
+one URL. It is **on by default at loopback** (`ws://127.0.0.1:8082`), so it needs no flag:
 
 ```bash
-./target/release/doublezero-edge-connect --iface doublezero1 --hl-ws-bind 0.0.0.0:8082
+./target/release/doublezero-edge-connect --iface doublezero1
 ```
+
+It has no TLS or authentication, so a wildcard bind serves your feeds to anyone who can reach the port. For a client on another host, set `--hl-ws-bind 0.0.0.0:8082` (`HL_WS_BIND`) and firewall the port. An empty value turns the sink off.
 
 It is a **rendering, not a second protocol**: it holds no book of its own, adds no deduplication and
 influences no arbitration, reading the same internal broadcast the normalized sink reads. Nothing
@@ -136,11 +138,13 @@ rest of the service surface.
 
 ## Binance-compatible sink
 
-Serves the Binance feeds' quotes and trades in **Binance's own market-stream schema**, so a Binance client, such as NautilusTrader's stock Binance data clients, consumes edge-connect by changing its WebSocket base URL. It is **on by default at loopback** (`127.0.0.1:8083`), since it has no TLS or authentication; bind a wildcard to serve a client on another host, or pass an empty value to turn it off:
+Serves the Binance feeds' quotes and trades in **Binance's own market-stream schema**, so a Binance client, such as NautilusTrader's stock Binance data clients, consumes edge-connect by changing its WebSocket base URL. It is **on by default at loopback** (`ws://127.0.0.1:8083`), so it needs no flag:
 
 ```bash
-./target/release/doublezero-edge-connect --iface doublezero1 --binance-ws-bind 0.0.0.0:8083
+./target/release/doublezero-edge-connect --iface doublezero1
 ```
+
+It has no TLS or authentication, so a wildcard bind serves your feeds to anyone who can reach the port. For a client on another host, set `--binance-ws-bind 0.0.0.0:8083` (`BINANCE_WS_BIND`) and firewall the port. An empty value turns the sink off.
 
 Like the Hyperliquid sink, it is a rendering, not a second protocol. Nothing about it is in PROTOCOL.md, it is not subscription-gated, and a bind failure disables it with a warning.
 
@@ -222,11 +226,13 @@ Client limits are the Hyperliquid sink's: 64 clients, 600 inbound frames per min
 
 ## Kalshi-compatible sink
 
-Serves Kalshi's event contracts in **Kalshi's own trade-API WebSocket protocol**, so a Kalshi client, such as NautilusTrader 2.0's Kalshi data client, reads edge-connect by changing its WebSocket URL. It is **on by default at loopback** (`127.0.0.1:8084`), since it has no TLS or authentication; bind a wildcard to serve a client on another host, or pass an empty value to turn it off:
+Serves Kalshi's event contracts in **Kalshi's own trade-API WebSocket protocol**, so a Kalshi client, such as NautilusTrader 2.0's Kalshi data client, reads edge-connect by changing its WebSocket URL. It is **on by default at loopback** (`ws://127.0.0.1:8084`), so it needs no flag:
 
 ```bash
-./target/release/doublezero-edge-connect --iface doublezero1 --kalshi-ws-bind 0.0.0.0:8084
+./target/release/doublezero-edge-connect --iface doublezero1
 ```
+
+It has no TLS or authentication, so a wildcard bind serves your feeds to anyone who can reach the port. For a client on another host, set `--kalshi-ws-bind 0.0.0.0:8084` (`KALSHI_WS_BIND`) and firewall the port. An empty value turns the sink off.
 
 Like the Hyperliquid sink, it is a rendering, not a second protocol. Nothing about it is in PROTOCOL.md, it is not subscription-gated, and a bind failure disables it with a warning. Connect to `ws://<host>:8084/trade-api/ws/v2`, Kalshi's own path; any other path gets a 404. The handshake's signed `KALSHI-ACCESS-*` headers are accepted, never checked and never logged.
 
