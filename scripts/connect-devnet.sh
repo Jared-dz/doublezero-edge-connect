@@ -634,7 +634,7 @@ mount_args=()
 mount_args+=("${REGISTRY_MOUNT[@]}")
 # Relay bridge env vars to the container. The bridge reads every flag from an env var, so this is
 # the only wiring needed to tune the WS sink, narrow feeds, or raise log level — no per-feature
-# logic here. Only non-empty values are forwarded, with one exception (WS_BIND, below).
+# logic here. Only non-empty values are forwarded, except the sink binds below.
 # This is an allowlist, not a wildcard: a bridge env var absent from it is silently NOT relayed,
 # and the bridge falls back to its compiled default. Add new ones here.
 PASSTHROUGH=(
@@ -642,7 +642,7 @@ PASSTHROUGH=(
   DZ_SUBSCRIPTION_REFRESH_SECS DZ_SUBSCRIPTION_GATING_DISABLE DZ_QUOTE_MAP
   WS_HEARTBEAT_SECS WS_IDLE_TIMEOUT_SECS WS_MAX_CLIENTS
   WS_MAX_SUBS WS_MAX_INBOUND_PER_MIN WS_BROADCAST_CAPACITY
-  HL_WS_BIND BINANCE_WS_BIND KALSHI_WS_BIND DZ_API_BIND METRICS_BIND
+  DZ_API_BIND METRICS_BIND
   DZ_CHANNELS DZ_ADMIN_BIND DZ_FEED_REGISTRY DZ_FEED_REGISTRY_URL
   WS_INPUT_URL WS_INPUT_COINS PHOENIX_WS_INPUT_URL PHOENIX_WS_INPUT_MARKETS
   DZ_ARB_LEADER_TIMEOUT_SECS DZ_ARB_TRANSFER_MARGIN_US DZ_ARB_TRANSFER_WIN_RATE
@@ -660,10 +660,12 @@ done
 # See 4c above: force DZ_FEED_REGISTRY_URL empty on the container so the bind-mounted file wins
 # over the image's baked-in default, rather than being silently shadowed by it.
 [ "$CLEAR_REGISTRY_URL" = 1 ] && env_args+=(-e "DZ_FEED_REGISTRY_URL=")
-# WS_BIND is the one var forwarded whenever it is *set* — including set-but-empty (WS_BIND="") —
-# so the WS sink can be disabled straight from the one-liner (an empty --ws-bind turns the sink
-# off in the bridge). The preflight above may also have set/cleared it in response to a conflict.
-[ "${WS_BIND+set}" = set ] && env_args+=(-e "WS_BIND=${WS_BIND}")
+# The sink binds are forwarded whenever they are *set* — including set-but-empty (WS_BIND="") —
+# so a sink can be disabled straight from the one-liner (an empty bind turns it off in the
+# bridge). The preflight above may also have set/cleared WS_BIND in response to a conflict.
+for v in WS_BIND HL_WS_BIND BINANCE_WS_BIND KALSHI_WS_BIND; do
+  [ "${!v+set}" = set ] && env_args+=(-e "$v=${!v}")
+done
 $SUDO docker run -d --name "$DZ_NAME" \
   --restart unless-stopped \
   --stop-timeout 60 \
@@ -870,10 +872,14 @@ else
     echo "  WebSocket : ws://${ws_host}:${WS_PORT}            # once >=1 market-data feed is subscribed"
   fi
 fi
+# Unset, a venue sink binds the bridge's loopback default; set empty, it is off.
+: "${HL_WS_BIND=127.0.0.1:8082}" "${BINANCE_WS_BIND=127.0.0.1:8083}" "${KALSHI_WS_BIND=127.0.0.1:8084}"
 # The Hyperliquid-compatible sink is not subscription-gated: it binds at bridge start, and a failed
 # bind only warns. Advertise the URL only on the bridge's own "listening" line; a port probe can't
 # confirm it, since the likeliest failure is another process holding that port.
-if [ "$CONNECT_STATE" = connected ] && [ -n "${HL_WS_BIND:-}" ]; then
+if [ "$CONNECT_STATE" = connected ] && [ -z "$HL_WS_BIND" ]; then
+  info "The Hyperliquid-compatible sink is disabled (HL_WS_BIND=\"\")."
+elif [ "$CONNECT_STATE" = connected ]; then
   hl_log="$($SUDO docker logs "$DZ_NAME" 2>&1 | grep -E "Hyperliquid-compatible (WebSocket sink listening|sink disabled)" | tail -1 | sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' || true)"
   hl_host="$(url_host "${HL_WS_BIND%:*}")"
   case "$hl_log" in
@@ -883,7 +889,9 @@ if [ "$CONNECT_STATE" = connected ] && [ -n "${HL_WS_BIND:-}" ]; then
   esac
 fi
 # The Binance-compatible sink is advertised the same way. It serves one matching engine per path.
-if [ "$CONNECT_STATE" = connected ] && [ -n "${BINANCE_WS_BIND:-}" ]; then
+if [ "$CONNECT_STATE" = connected ] && [ -z "$BINANCE_WS_BIND" ]; then
+  info "The Binance-compatible sink is disabled (BINANCE_WS_BIND=\"\")."
+elif [ "$CONNECT_STATE" = connected ]; then
   bn_log="$($SUDO docker logs "$DZ_NAME" 2>&1 | grep -E "Binance-compatible (WebSocket sink listening|sink disabled)" | tail -1 | sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' || true)"
   bn_host="$(url_host "${BINANCE_WS_BIND%:*}")"
   case "$bn_log" in
@@ -895,7 +903,9 @@ if [ "$CONNECT_STATE" = connected ] && [ -n "${BINANCE_WS_BIND:-}" ]; then
   esac
 fi
 # The Kalshi-compatible sink is advertised the same way, at the trade API's WebSocket path.
-if [ "$CONNECT_STATE" = connected ] && [ -n "${KALSHI_WS_BIND:-}" ]; then
+if [ "$CONNECT_STATE" = connected ] && [ -z "$KALSHI_WS_BIND" ]; then
+  info "The Kalshi-compatible sink is disabled (KALSHI_WS_BIND=\"\")."
+elif [ "$CONNECT_STATE" = connected ]; then
   kalshi_log="$($SUDO docker logs "$DZ_NAME" 2>&1 | grep -E "Kalshi-compatible (WebSocket sink listening|sink disabled)" | tail -1 | sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' || true)"
   kalshi_host="$(url_host "${KALSHI_WS_BIND%:*}")"
   case "$kalshi_log" in

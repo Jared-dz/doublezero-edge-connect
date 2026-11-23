@@ -1,6 +1,6 @@
 //! Binance-compatible WebSocket sink: re-serve Binance's top-of-book quotes and trades in **Binance's
 //! own market-stream schema**, so a Binance client consumes edge-connect by pointing its WebSocket
-//! base URL here. Off by default (`--binance-ws-bind`).
+//! base URL here. On by default at loopback (`--binance-ws-bind`).
 //!
 //! A rendering, not a second pipeline, exactly as [`super::hyperliquid`] is: it holds no ingest state
 //! and nothing about it belongs in PROTOCOL.md. NautilusTrader **v1.231.0**'s Binance adapter is the

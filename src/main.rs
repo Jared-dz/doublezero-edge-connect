@@ -218,25 +218,40 @@ struct Args {
     )]
     phoenix_ws_input_url: String,
 
-    /// Bind address for the Hyperliquid-compatible WebSocket sink, e.g. `0.0.0.0:8082`. Off by
-    /// default (empty disables it). This serves Hyperliquid's own schema, not the protocol in
-    /// PROTOCOL.md — point an existing Hyperliquid client's WebSocket endpoint at it. Not
-    /// subscription-gated. No TLS; terminate at a proxy if exposed.
-    #[arg(long = "hl-ws-bind", env = "HL_WS_BIND", default_value = "")]
+    /// Bind address for the Hyperliquid-compatible WebSocket sink. On by default at loopback;
+    /// `0.0.0.0:8082` serves clients on other hosts, and an empty value disables it. This serves
+    /// Hyperliquid's own schema, not the protocol in PROTOCOL.md — point an existing Hyperliquid
+    /// client's WebSocket endpoint at it. Not subscription-gated. No TLS; terminate at a proxy if
+    /// exposed.
+    #[arg(
+        long = "hl-ws-bind",
+        env = "HL_WS_BIND",
+        default_value = "127.0.0.1:8082"
+    )]
     hl_ws_bind: String,
 
-    /// Bind address for the Binance-compatible WebSocket sink, e.g. `0.0.0.0:8083`. Off by default
-    /// (empty disables it). Serves Binance's own market-stream schema, not PROTOCOL.md: point a
-    /// Binance client's WebSocket base URL at `ws://<host>:<port>/usdsm` (USD-M perpetuals) or
-    /// `/spot`. Not subscription-gated. No TLS; terminate at a proxy if exposed.
-    #[arg(long = "binance-ws-bind", env = "BINANCE_WS_BIND", default_value = "")]
+    /// Bind address for the Binance-compatible WebSocket sink. On by default at loopback;
+    /// `0.0.0.0:8083` serves clients on other hosts, and an empty value disables it. Serves
+    /// Binance's own market-stream schema, not PROTOCOL.md: point a Binance client's WebSocket base
+    /// URL at `ws://<host>:<port>/usdsm` (USD-M perpetuals) or `/spot`. Not subscription-gated. No
+    /// TLS; terminate at a proxy if exposed.
+    #[arg(
+        long = "binance-ws-bind",
+        env = "BINANCE_WS_BIND",
+        default_value = "127.0.0.1:8083"
+    )]
     binance_ws_bind: String,
 
-    /// Bind address for the Kalshi-compatible WebSocket sink, e.g. `0.0.0.0:8084`. Off by default
-    /// (empty disables it). Serves Kalshi's event contracts in Kalshi's own trade-API schema, not
-    /// PROTOCOL.md: point a Kalshi client's WebSocket URL at `ws://<host>:<port>/trade-api/ws/v2`.
-    /// Not subscription-gated. No TLS; terminate at a proxy if exposed.
-    #[arg(long = "kalshi-ws-bind", env = "KALSHI_WS_BIND", default_value = "")]
+    /// Bind address for the Kalshi-compatible WebSocket sink. On by default at loopback;
+    /// `0.0.0.0:8084` serves clients on other hosts, and an empty value disables it. Serves
+    /// Kalshi's event contracts in Kalshi's own trade-API schema, not PROTOCOL.md: point a Kalshi
+    /// client's WebSocket URL at `ws://<host>:<port>/trade-api/ws/v2`. Not subscription-gated. No
+    /// TLS; terminate at a proxy if exposed.
+    #[arg(
+        long = "kalshi-ws-bind",
+        env = "KALSHI_WS_BIND",
+        default_value = "127.0.0.1:8084"
+    )]
     kalshi_ws_bind: String,
 
     /// Prometheus metrics HTTP endpoint bind address (e.g. `127.0.0.1:9090`). Off by default
@@ -761,7 +776,7 @@ async fn main() -> Result<()> {
         bootstrap_release_deadline: sinks::ws::BOOTSTRAP_RELEASE_DEADLINE,
     };
 
-    // Hyperliquid-compatible sink: off by default (opt-in via `--hl-ws-bind`), and not
+    // Hyperliquid-compatible sink: on by default at loopback (`--hl-ws-bind`), and not
     // subscription-gated — it is a rendering of whatever the shared broadcast carries, so it has no
     // group of its own to be subscribed to. A bind failure disables it with a warning rather than
     // taking the tunnel down, exactly as the normalized sink's does.
@@ -781,7 +796,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Binance-compatible sink: off by default and not subscription-gated, like the one above.
+    // Binance-compatible sink: on by default and not subscription-gated, like the one above.
     let binance_sink = if args.binance_ws_bind.is_empty() {
         info!("Binance-compatible sink disabled (empty --binance-ws-bind)");
         None
@@ -795,7 +810,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Kalshi-compatible sink: off by default and not subscription-gated, like the one above.
+    // Kalshi-compatible sink: on by default and not subscription-gated, like the one above.
     let kalshi_sink = if args.kalshi_ws_bind.is_empty() {
         info!("Kalshi-compatible sink disabled (empty --kalshi-ws-bind)");
         None
@@ -1074,6 +1089,16 @@ mod tests {
     #[test]
     fn the_ws_sink_defaults_to_loopback() {
         assert_eq!(Args::parse_from(["x"]).ws_bind, "127.0.0.1:8081");
+    }
+
+    /// The installers print these URLs when the variables are unset.
+    #[test]
+    fn the_venue_sinks_default_to_loopback() {
+        let a = Args::parse_from(["x"]);
+        assert_eq!(
+            [a.hl_ws_bind, a.binance_ws_bind, a.kalshi_ws_bind],
+            ["127.0.0.1:8082", "127.0.0.1:8083", "127.0.0.1:8084"]
+        );
     }
 
     // The identity that maps 1:1 to a spawned receiver (the reconciler's `FeedKey`). Includes the

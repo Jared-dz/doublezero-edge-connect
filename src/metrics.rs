@@ -392,7 +392,7 @@ pub struct Metrics {
     /// `awaiting` drops never stop is a client dark on that book.
     pub ws_frames_dropped: IntCounterVec,
 
-    // --- Hyperliquid-compatible sink (off by default) ---
+    // --- Hyperliquid-compatible sink (on by default, at loopback) ---
     /// Currently-connected clients of the Hyperliquid-compatible sink.
     pub hl_sink_clients: IntGauge,
     /// Frames sent by the Hyperliquid-compatible sink, by `channel` (l2Book/l4Book/trades/bbo).
@@ -406,7 +406,7 @@ pub struct Metrics {
     /// (correct) or once per client per batch.
     pub hl_sink_folds: IntCounter,
 
-    // --- Binance-compatible sink (off by default) ---
+    // --- Binance-compatible sink (on by default, at loopback) ---
     /// Currently-connected clients of the Binance-compatible sink.
     pub binance_sink_clients: IntGauge,
     /// Frames sent by the Binance-compatible sink, by `stream` kind (bookTicker/aggTrade/trade).
@@ -417,7 +417,7 @@ pub struct Metrics {
     /// schema cannot express).
     pub binance_sink_dropped: IntCounterVec,
 
-    // --- Kalshi-compatible sink (off by default) ---
+    // --- Kalshi-compatible sink (on by default, at loopback) ---
     /// Currently-connected clients of the Kalshi-compatible sink.
     pub kalshi_sink_clients: IntGauge,
     /// Frames sent by the Kalshi-compatible sink, by message `type`.

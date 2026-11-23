@@ -1,6 +1,6 @@
 //! Hyperliquid-compatible WebSocket sink: re-serve our reconstructed order book, top-of-book quote
 //! and tape in **Hyperliquid's own schema**, so an existing Hyperliquid client consumes edge-connect
-//! by pointing its WebSocket endpoint here. Off by default (`--hl-ws-bind`).
+//! by pointing its WebSocket endpoint here. On by default at loopback (`--hl-ws-bind`).
 //!
 //! This is a **rendering, not a second pipeline**: it holds no ingest state, adds no dedup identity
 //! and influences no arbitration. It reads the same broadcast `sinks::ws` reads plus the shared
