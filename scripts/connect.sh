@@ -984,12 +984,13 @@ fi
 # Unset, a venue sink binds the bridge's loopback default; set empty, it is off.
 : "${HL_WS_BIND=127.0.0.1:8082}" "${BINANCE_WS_BIND=127.0.0.1:8083}" "${KALSHI_WS_BIND=127.0.0.1:8084}"
 # The Hyperliquid-compatible sink is not subscription-gated: it binds at bridge start, and a failed
-# bind only warns. Advertise the URL only on the bridge's own "listening" line; a port probe can't
-# confirm it, since the likeliest failure is another process holding that port.
+# bind only warns. Its log line decides, since a port probe also passes when another process holds
+# the port; the probe stands in only when RUST_LOG hides the info-level "listening" line.
 if [ "$CONNECT_STATE" = connected ] && [ -z "$HL_WS_BIND" ]; then
   info "The Hyperliquid-compatible sink is disabled (HL_WS_BIND=\"\")."
 elif [ "$CONNECT_STATE" = connected ]; then
   hl_log="$($SUDO docker logs "$DZ_NAME" 2>&1 | grep -E "Hyperliquid-compatible (WebSocket sink listening|sink disabled)" | tail -1 | sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' || true)"
+  [ -z "$hl_log" ] && port_in_use "${HL_WS_BIND##*:}" && hl_log="sink listening"
   hl_host="$(url_host "${HL_WS_BIND%:*}")"
   case "$hl_log" in
     *"sink listening"*) echo "  Hyperliquid : ws://${hl_host}:${HL_WS_BIND##*:}            # Hyperliquid's own schema (docs/output-sinks.md)" ;;
@@ -1002,6 +1003,7 @@ if [ "$CONNECT_STATE" = connected ] && [ -z "$BINANCE_WS_BIND" ]; then
   info "The Binance-compatible sink is disabled (BINANCE_WS_BIND=\"\")."
 elif [ "$CONNECT_STATE" = connected ]; then
   bn_log="$($SUDO docker logs "$DZ_NAME" 2>&1 | grep -E "Binance-compatible (WebSocket sink listening|sink disabled)" | tail -1 | sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' || true)"
+  [ -z "$bn_log" ] && port_in_use "${BINANCE_WS_BIND##*:}" && bn_log="sink listening"
   bn_host="$(url_host "${BINANCE_WS_BIND%:*}")"
   case "$bn_log" in
     *"sink listening"*)
@@ -1016,6 +1018,7 @@ if [ "$CONNECT_STATE" = connected ] && [ -z "$KALSHI_WS_BIND" ]; then
   info "The Kalshi-compatible sink is disabled (KALSHI_WS_BIND=\"\")."
 elif [ "$CONNECT_STATE" = connected ]; then
   kalshi_log="$($SUDO docker logs "$DZ_NAME" 2>&1 | grep -E "Kalshi-compatible (WebSocket sink listening|sink disabled)" | tail -1 | sed -E 's/\x1b\[[0-9;]*[A-Za-z]//g' || true)"
+  [ -z "$kalshi_log" ] && port_in_use "${KALSHI_WS_BIND##*:}" && kalshi_log="sink listening"
   kalshi_host="$(url_host "${KALSHI_WS_BIND%:*}")"
   case "$kalshi_log" in
     *"sink listening"*) echo "  Kalshi      : ws://${kalshi_host}:${KALSHI_WS_BIND##*:}/trade-api/ws/v2   # Kalshi's own schema (docs/output-sinks.md)" ;;

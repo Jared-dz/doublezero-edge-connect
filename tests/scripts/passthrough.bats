@@ -252,3 +252,26 @@ venue_listening() {
     ! grep -q 'ws://.*:808[234]' "$out" || { echo "# $s printed a disabled sink's URL"; false; }
   done
 }
+
+@test "venue sinks' listening lines hidden (RUST_LOG=warn): a bound port confirms each, a free one warns (all scripts)" {
+  printf '#!/usr/bin/env bash\nfor p in 8082 8083 8084; do echo "LISTEN 0 128 127.0.0.1:$p 0.0.0.0:*"; done\n' >"$STUB_BIN/ss"
+  chmod +x "$STUB_BIN/ss"
+  for s in "${SCRIPTS[@]}"; do
+    local out="$BATS_TEST_TMPDIR/$s.out"
+    ( common_env; export DZ_INSTALL_CLI=0 DZ_SUBSCRIPTION_REFRESH_SECS=0; unset HL_WS_BIND BINANCE_WS_BIND KALSHI_WS_BIND
+      bash "$SCRIPTS_DIR/$s.sh" ) >"$out" 2>&1 || { echo "# $s exited $?"; sed 's/^/#   /' "$out"; false; }
+    grep -q 'Hyperliquid *: ws://127.0.0.1:8082 ' "$out" \
+      && grep -q 'Binance spot *: ws://127.0.0.1:8083/spot' "$out" \
+      && grep -q 'Kalshi *: ws://127.0.0.1:8084/trade-api/ws/v2 ' "$out" \
+      && ! grep -q 'Could not confirm' "$out" \
+      || { echo "# $s, ports bound:"; sed 's/^/#   /' "$out"; false; }
+  done
+  ss_reports_free "$STUB_BIN"
+  for s in "${SCRIPTS[@]}"; do
+    local out="$BATS_TEST_TMPDIR/$s.out"
+    ( common_env; export DZ_INSTALL_CLI=0 DZ_SUBSCRIPTION_REFRESH_SECS=0; unset HL_WS_BIND BINANCE_WS_BIND KALSHI_WS_BIND
+      bash "$SCRIPTS_DIR/$s.sh" ) >"$out" 2>&1 || { echo "# $s exited $?"; sed 's/^/#   /' "$out"; false; }
+    [ "$(grep -c 'Could not confirm the .*-compatible sink' "$out")" -eq 3 ] && ! grep -q 'ws://127.0.0.1:808[234]' "$out" \
+      || { echo "# $s, ports free:"; sed 's/^/#   /' "$out"; false; }
+  done
+}
