@@ -121,7 +121,7 @@ Modules are grouped by role under `src/`:
     `--shred-dedup-window-slots`.
 - **`market_data/`** — the native market-data response format as **pure functions** over plain
   input structs: `native` (the `<source_id>:<category>:<channel>:<instrument_id>` id, accepted in
-  its one canonical spelling only; `Freshness`; decimal and RFC 3339 formatting; the quote, markets
+  its one canonical spelling only; `FreshnessReport`; decimal and RFC 3339 formatting; the quote, markets
   and ambiguous-instrument bodies and their links), built on `response`'s `Freshness`, `Problem`
   and `ProblemKind` — the one problem catalog; extend it there rather than adding a second
   type. No route calls them yet. Links come only from configured URLs, never from a
