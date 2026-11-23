@@ -55,7 +55,8 @@ hands everything to the **subscription reconciler** (`ingest::reconcile`), which
 activation authority: it decides *which* of those feeds (plus the WS sink and the shred forwarder)
 actually run, based on what the host is subscribed to. `main.rs`'s top-level `select!` then awaits
 the reconciler plus the independently-spawned public WS inputs and metrics endpoint; the
-process exits only if one of those tasks panics.
+process exits only if one of those tasks panics. A venue-compatible sink whose task ends is logged,
+counted (`dz_venue_sink_exits_total`) and left off.
 
 **Activation is subscription-driven and dynamic** (`ingest::reconcile` + `ingest::subscriptions`):
 the reconciler polls the host's multicast subscriptions from `doublezero status --json` every
@@ -1106,8 +1107,8 @@ Modules are grouped by role under `src/`:
   variants' meaning that exists, but it consumes the node's raw book diffs rather than this channel:
   **there is no reference `l4Book` consumer in either source**, so nothing here should be written as
   though a particular client's behaviour were known.
-  The accept loop never propagates an error (this task's `Err` reaches `main`'s `select!` and would exit
-  the process; unlike `ws`'s, no reconciler respawns it), and the client limits are constants, of which
+  The accept loop never propagates an error (an ended task leaves this sink off until
+  restart: unlike `ws`'s, no reconciler respawns it), and the client limits are constants, of which
   the inbound rate cap is the load-bearing one — a subscribe frame is tens of bytes and costs a whole
   book to answer, and the `subs.contains` guard cannot see an unsubscribe-then-resubscribe loop. A
   WebSocket `Ping` is charged against that cap too (it costs an outbound `Pong`), and crossing it sends

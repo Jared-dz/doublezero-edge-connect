@@ -428,6 +428,9 @@ pub struct Metrics {
     /// price no binary contract can have) or `unknown_aggressor`.
     pub kalshi_sink_dropped: IntCounterVec,
 
+    /// Venue-compatible sinks whose task ended, by `sink`. Each stays off until restart.
+    pub venue_sink_exits: IntCounterVec,
+
     // --- Public WS inputs (per-venue backstops; off by default) ---
     /// Input health per `venue`: 1 while the public WebSocket session is connected, 0 while
     /// down/reconnecting.
@@ -1225,6 +1228,12 @@ impl Metrics {
                 "dz_kalshi_sink_dropped_total",
                 "What the Kalshi-compatible sink did not serve, by reason",
                 &["reason"],
+            ),
+            venue_sink_exits: counter_vec(
+                &registry,
+                "dz_venue_sink_exits_total",
+                "Venue-compatible sinks whose task ended, leaving them off until restart, by sink",
+                &["sink"],
             ),
             ws_input_up: gauge_vec(
                 &registry,

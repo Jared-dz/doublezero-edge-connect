@@ -9,13 +9,14 @@
 
 use std::{
     collections::HashMap,
+    convert::Infallible,
     sync::{Arc, Mutex},
 };
 
 use anyhow::{bail, Result};
 use clap::Parser;
-use tokio::sync::broadcast;
-use tracing::{info, warn};
+use tokio::{sync::broadcast, task::JoinHandle};
+use tracing::{error, info, warn};
 
 use doublezero_edge_connect::{history, ingest, metrics, model, shred, sinks};
 use ingest::{
@@ -589,6 +590,27 @@ fn check_channel_filter_covers_enabled(
     Ok(())
 }
 
+/// Never resolves: however a venue sink's task ends, the end is logged and counted and the sink is
+/// left off, rather than taking the tunnel down with it.
+async fn watch_venue_sink(sink: &'static str, task: Option<JoinHandle<Result<()>>>) -> Infallible {
+    if let Some(task) = task {
+        let why = match task.await {
+            Ok(Ok(())) => "returned".to_owned(),
+            Ok(Err(e)) => format!("{e:#}"),
+            Err(e) => e.to_string(),
+        };
+        error!(
+            sink,
+            "venue-compatible sink stopped, and stays off until restart: {why}"
+        );
+        metrics::metrics()
+            .venue_sink_exits
+            .with_label_values(&[sink])
+            .inc();
+    }
+    std::future::pending().await
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // RUST_LOG, when set, is honored verbatim. Unset, we default to a quiet base of `warn`
@@ -1001,18 +1023,9 @@ async fn main() -> Result<()> {
             Some(handle) => handle.await,
             None => std::future::pending().await,
         } } => r?,
-        r = async { match hl_sink {
-            Some(handle) => handle.await,
-            None => std::future::pending().await,
-        } } => r??,
-        r = async { match binance_sink {
-            Some(handle) => handle.await,
-            None => std::future::pending().await,
-        } } => r??,
-        r = async { match kalshi_sink {
-            Some(handle) => handle.await,
-            None => std::future::pending().await,
-        } } => r??,
+        never = watch_venue_sink("hyperliquid", hl_sink) => match never {},
+        never = watch_venue_sink("binance", binance_sink) => match never {},
+        never = watch_venue_sink("kalshi", kalshi_sink) => match never {},
         // The metrics endpoint (when enabled) loops forever; its path resolves only on a bind/accept
         // failure or a task panic.
         r = async { match metrics_srv {
@@ -1098,6 +1111,60 @@ mod tests {
         assert_eq!(
             [a.hl_ws_bind, a.binance_ws_bind, a.kalshi_ws_bind],
             ["127.0.0.1:8082", "127.0.0.1:8083", "127.0.0.1:8084"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_venue_sink_that_exits_is_logged_and_counted_and_main_keeps_running() {
+        #[derive(Clone, Default)]
+        struct Log(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Log {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let log = Log::default();
+        let writer = log.clone();
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_ansi(false)
+                .with_writer(move || writer.clone())
+                .finish(),
+        );
+
+        let panics: JoinHandle<Result<()>> = tokio::spawn(async { panic!("render bug") });
+        let errs: JoinHandle<Result<()>> = tokio::spawn(async { bail!("accept gave up") });
+        let ended = tokio::time::timeout(std::time::Duration::from_millis(100), async {
+            tokio::select! {
+                never = watch_venue_sink("test-panicking", Some(panics)) => match never {},
+                never = watch_venue_sink("test-erroring", Some(errs)) => match never {},
+            }
+        })
+        .await;
+
+        assert!(ended.is_err(), "a venue sink's exit resolved main's select");
+        let exits = |sink| {
+            metrics::metrics()
+                .venue_sink_exits
+                .with_label_values(&[sink])
+                .get()
+        };
+        assert_eq!([exits("test-panicking"), exits("test-erroring")], [1, 1]);
+        let log = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        let line = |sink| log.lines().find(|l| l.contains(sink)).unwrap_or_default();
+        assert!(
+            line("test-panicking").contains("ERROR")
+                && line("test-panicking").contains("render bug"),
+            "{log}"
+        );
+        assert!(
+            line("test-erroring").contains("ERROR")
+                && line("test-erroring").contains("accept gave up"),
+            "{log}"
         );
     }
 

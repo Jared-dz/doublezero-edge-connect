@@ -1460,7 +1460,7 @@ pub async fn bind(addr: &str) -> Result<TcpListener> {
     Ok(listener)
 }
 
-/// Never returns an accept error: `main`'s `select!` would exit the process over it.
+/// Never returns an accept error: `main` would leave this sink off until restart over it.
 pub async fn serve(
     listener: TcpListener,
     tx: broadcast::Sender<Arc<FeedMessage>>,

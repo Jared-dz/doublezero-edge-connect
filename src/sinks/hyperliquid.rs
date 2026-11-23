@@ -1017,10 +1017,8 @@ pub async fn serve(
         wanted.clone(),
     ));
     loop {
-        // Never propagate an accept error: this task's `Err` reaches `main`'s `select!` and would
-        // exit the process — tunnel, receivers and every other sink with it — over a transient
-        // `ECONNABORTED`/`EMFILE` on an opt-in compatibility port. That is the same outcome the
-        // non-fatal bind above exists to avoid.
+        // Never propagate an accept error: `main` would leave this sink off until restart over a
+        // transient `ECONNABORTED`/`EMFILE`.
         let (stream, peer) = match listener.accept().await {
             Ok(pair) => pair,
             Err(e) => {
