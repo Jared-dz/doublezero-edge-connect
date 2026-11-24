@@ -3,13 +3,14 @@
 //! runtime:
 //!   - [`ws`]      - WebSocket server (PROTOCOL.md wire contract); on by default, off if `--ws-bind` empty.
 //!   - [`hyperliquid`] - the same data in **Hyperliquid's own schema** for an existing Hyperliquid
-//!     client; off by default, on when `--hl-ws-bind` is set. A rendering, not a second protocol —
-//!     see `docs/output-sinks.md`, never PROTOCOL.md.
+//!     client; on by default at loopback, off if `--hl-ws-bind` empty. A rendering, not a second
+//!     protocol — see `docs/output-sinks.md`, never PROTOCOL.md.
 //!   - [`binance`] - Binance's quotes and trades in **Binance's own schema**, for an existing Binance
-//!     client; off by default, on when `--binance-ws-bind` is set. A rendering, like [`hyperliquid`].
-//!   - [`kalshi`] - Kalshi's event-contract books, quotes and trades in **Kalshi's own schema**, for an
-//!     existing Kalshi client; off by default, on when `--kalshi-ws-bind` is set. A rendering, like
+//!     client; on by default at loopback, off if `--binance-ws-bind` empty. A rendering, like
 //!     [`hyperliquid`].
+//!   - [`kalshi`] - Kalshi's event-contract books, quotes and trades in **Kalshi's own schema**, for an
+//!     existing Kalshi client; on by default at loopback, off if `--kalshi-ws-bind` empty. A
+//!     rendering, like [`hyperliquid`].
 //!   - [`metrics`] - Prometheus metrics HTTP endpoint; off by default, on when `--metrics-bind` is set.
 //!   - [`api`]     - read-only `/v1` JSON query API over the rolling history window + snapshots.
 //!   - [`admin`]   - the one mutation path (runtime channel-filter changes); on by default, at
@@ -17,8 +18,8 @@
 //!     Deliberately separate from [`api`] so `/v1` stays provably read-only.
 //!
 //! Sink activation is uniform: a sink is active when its key config value is non-empty/present.
-//! The WS sink just ships a non-empty default bind, so it is on unless explicitly cleared; the
-//! metrics/admin endpoints ship an empty default, so they are off unless a bind is given. A new
+//! The WS and venue sinks ship a non-empty default bind, so they are on unless explicitly cleared;
+//! the metrics/admin endpoints ship an empty default, so they are off unless a bind is given. A new
 //! output feature is added here as a sibling module + a spawn in `main.rs`.
 //!
 //! Note: [`metrics`], [`api`] and [`admin`] are the "sinks" that do not consume the broadcast — each

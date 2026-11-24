@@ -1,6 +1,6 @@
 //! Binance-compatible WebSocket sink: re-serve Binance's top-of-book quotes and trades in **Binance's
 //! own market-stream schema**, so a Binance client consumes edge-connect by pointing its WebSocket
-//! base URL here. Off by default (`--binance-ws-bind`).
+//! base URL here. On by default at loopback (`--binance-ws-bind`).
 //!
 //! A rendering, not a second pipeline, exactly as [`super::hyperliquid`] is: it holds no ingest state
 //! and nothing about it belongs in PROTOCOL.md. NautilusTrader **v1.231.0**'s Binance adapter is the
@@ -631,7 +631,7 @@ pub async fn bind(addr: &str) -> Result<TcpListener> {
     Ok(listener)
 }
 
-/// Never returns an accept error: `main`'s `select!` would exit the process over it.
+/// Never returns an accept error: `main` would leave this sink off until restart over it.
 pub async fn serve(listener: TcpListener, tx: broadcast::Sender<Arc<FeedMessage>>) -> Result<()> {
     let clients = Arc::new(AtomicUsize::new(0));
     let (prepared, _) = broadcast::channel::<Arc<Prepared>>(PREPARED_CAPACITY);

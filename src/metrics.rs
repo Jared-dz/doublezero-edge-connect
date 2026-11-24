@@ -392,7 +392,7 @@ pub struct Metrics {
     /// `awaiting` drops never stop is a client dark on that book.
     pub ws_frames_dropped: IntCounterVec,
 
-    // --- Hyperliquid-compatible sink (off by default) ---
+    // --- Hyperliquid-compatible sink (on by default, at loopback) ---
     /// Currently-connected clients of the Hyperliquid-compatible sink.
     pub hl_sink_clients: IntGauge,
     /// Frames sent by the Hyperliquid-compatible sink, by `channel` (l2Book/l4Book/trades/bbo).
@@ -406,7 +406,7 @@ pub struct Metrics {
     /// (correct) or once per client per batch.
     pub hl_sink_folds: IntCounter,
 
-    // --- Binance-compatible sink (off by default) ---
+    // --- Binance-compatible sink (on by default, at loopback) ---
     /// Currently-connected clients of the Binance-compatible sink.
     pub binance_sink_clients: IntGauge,
     /// Frames sent by the Binance-compatible sink, by `stream` kind (bookTicker/aggTrade/trade).
@@ -417,7 +417,7 @@ pub struct Metrics {
     /// schema cannot express).
     pub binance_sink_dropped: IntCounterVec,
 
-    // --- Kalshi-compatible sink (off by default) ---
+    // --- Kalshi-compatible sink (on by default, at loopback) ---
     /// Currently-connected clients of the Kalshi-compatible sink.
     pub kalshi_sink_clients: IntGauge,
     /// Frames sent by the Kalshi-compatible sink, by message `type`.
@@ -427,6 +427,9 @@ pub struct Metrics {
     /// book), `evicted` (a book dropped to stay within the stage's market cap), `out_of_range` (a
     /// price no binary contract can have) or `unknown_aggressor`.
     pub kalshi_sink_dropped: IntCounterVec,
+
+    /// Venue-compatible sinks whose task ended, by `sink`. Each stays off until restart.
+    pub venue_sink_exits: IntCounterVec,
 
     // --- Public WS inputs (per-venue backstops; off by default) ---
     /// Input health per `venue`: 1 while the public WebSocket session is connected, 0 while
@@ -1225,6 +1228,12 @@ impl Metrics {
                 "dz_kalshi_sink_dropped_total",
                 "What the Kalshi-compatible sink did not serve, by reason",
                 &["reason"],
+            ),
+            venue_sink_exits: counter_vec(
+                &registry,
+                "dz_venue_sink_exits_total",
+                "Venue-compatible sinks whose task ended, leaving them off until restart, by sink",
+                &["sink"],
             ),
             ws_input_up: gauge_vec(
                 &registry,
