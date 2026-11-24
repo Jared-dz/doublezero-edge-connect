@@ -83,6 +83,7 @@ RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends iproute2 ca-certificates; \
     if [ -n "${DZ_CLIENT_REPO}" ]; then \
+      # --allow-downgrades: the pinned version can be older than the base's client.
       apt-get install -y --no-install-recommends --allow-downgrades \
         "doublezero${DZ_CLIENT_VERSION:+=$DZ_CLIENT_VERSION}"; \
       dpkg-query -W doublezero; \
