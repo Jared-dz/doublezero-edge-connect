@@ -69,11 +69,9 @@ jobs:
               continue
             fi
             if [ -n "$client_repo" ]; then
-              latest_client="$(docker run --rm ubuntu:24.04 bash -c '
+              latest_client="$(docker run --rm --entrypoint bash "${base}@${current}" -c '
                 set -e
                 apt-get update -qq >/dev/null
-                apt-get install -y -qq --no-install-recommends curl ca-certificates >/dev/null
-                curl -1sLf "https://dl.cloudsmith.io/public/malbeclabs/'"$client_repo"'/setup.deb.sh" | bash >/dev/null 2>&1
                 apt-cache policy doublezero | awk "/Candidate:/ {print \$2}"' || true)"
               recorded_client="$(docker buildx imagetools inspect --format '{{ index .Image.Config.Labels "io.doublezero.client.version" }}' "${image}:${moving}" 2>/dev/null || true)"
               echo "$envname: client latest=${latest_client:-<unresolved>} recorded=${recorded_client:-<none>}"

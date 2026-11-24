@@ -157,19 +157,17 @@ jobs:
 
       # Pin the exact client deb the variant installs, so the build is
       # reproducible and the poll can compare it against the repo's latest
-      # (recorded as the io.doublezero.client.version label). Resolved in a clean
-      # ubuntu:24.04 (the base's distro) holding only that one repo, so the
-      # candidate cannot come from another environment's train.
+      # (recorded as the io.doublezero.client.version label). Resolved inside the
+      # pinned base, which already carries that repo's apt list, so the candidate
+      # comes from the same distro and codename the Dockerfile installs into.
       - name: Resolve client version
         id: client
         if: steps.cfg.outputs.client_repo != ''
         shell: bash
         run: |
-          version="$(docker run --rm ubuntu:24.04 bash -c '
+          version="$(docker run --rm --entrypoint bash '${{ steps.cfg.outputs.base }}@${{ steps.base.outputs.digest }}' -c '
             set -e
             apt-get update -qq >/dev/null
-            apt-get install -y -qq --no-install-recommends curl ca-certificates >/dev/null
-            curl -1sLf "https://dl.cloudsmith.io/public/malbeclabs/${{ steps.cfg.outputs.client_repo }}/setup.deb.sh" | bash >/dev/null 2>&1
             apt-cache policy doublezero | awk "/Candidate:/ {print \$2}"')"
           case "$version" in ""|"(none)") echo "could not resolve doublezero in ${{ steps.cfg.outputs.client_repo }}"; exit 1 ;; esac
           echo "version=$version" >> "$GITHUB_OUTPUT"
