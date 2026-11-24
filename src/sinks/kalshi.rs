@@ -1,6 +1,6 @@
 //! Kalshi-compatible WebSocket sink: Kalshi's event-contract books, quotes and prints in **Kalshi's
 //! own trade-API WebSocket protocol** at `/trade-api/ws/v2`, so a Kalshi client reads edge-connect by
-//! changing its WebSocket URL. Off by default (`--kalshi-ws-bind`).
+//! changing its WebSocket URL. On by default at loopback (`--kalshi-ws-bind`).
 //!
 //! A rendering, like [`super::hyperliquid`]: nothing here belongs in PROTOCOL.md. Kalshi's documented
 //! protocol is the authority and NautilusTrader 2.0.0rc9's Kalshi data client is the acceptance test.
@@ -320,6 +320,8 @@ struct State {
     catching_up: bool,
     /// Whether folding it re-read a replay entry.
     reread: bool,
+    /// Whether a client is connected to be sent what folding it renders.
+    live: bool,
     tops: HashMap<Arc<str>, Top>,
     /// Whether each market key passes the definition gate. A cache, cleared when full.
     gates: HashMap<BookKey, bool>,
@@ -573,6 +575,9 @@ impl State {
             return None;
         }
         self.clock += 1;
+        if !self.live {
+            return None;
+        }
         Some(Prepared::Book {
             ticker: ticker.clone(),
             clock: self.clock,
@@ -590,8 +595,10 @@ impl State {
         msg: Option<&FeedMessage>,
         replay: &BookSnapshot,
         instruments: &InstrumentSnapshot,
+        live: bool,
         queued: impl FnOnce() -> usize,
     ) -> Vec<Prepared> {
+        self.live = live;
         let out = match msg {
             Some(m) => {
                 self.catching_up = self.owed > 0;
@@ -715,7 +722,9 @@ impl State {
             out.extend(self.publish(&ticker, deltas, ts_ms));
         }
         self.reread = true;
-        out.push(Prepared::Gap);
+        if self.live {
+            out.push(Prepared::Gap);
+        }
         out
     }
 
@@ -748,7 +757,11 @@ impl State {
         };
         let top = self.top(&q.symbol);
         top.quote = Some(quote);
-        let msg = ticker_msg(&q.symbol, &quote, top.print);
+        let print = top.print;
+        if !self.live {
+            return None;
+        }
+        let msg = ticker_msg(&q.symbol, &quote, print);
         Some(Prepared::Ticker {
             ticker: q.symbol.clone(),
             msg,
@@ -775,6 +788,9 @@ impl State {
             return None;
         }
         self.top(&t.symbol).print = Some((price, size));
+        if !self.live {
+            return None;
+        }
         let ms = ms_or_now(t.source_ts_ns);
         let msg = json(TradeMsg {
             trade_id: trade_uuid(t.trade_id),
@@ -827,19 +843,25 @@ async fn prepare_loop(
     instruments: InstrumentSnapshot,
 ) {
     loop {
-        let prepared = match backbone.recv().await {
-            Ok(m) => lock(&state).next(Some(&m), &replay, &instruments, || backbone.len()),
+        let msg = match backbone.recv().await {
+            Ok(m) => Some(m),
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 warn!("kalshi sink prepare stage lagged, dropped {n}");
                 dropped("prepare_lagged");
-                lock(&state).next(None, &replay, &instruments, || backbone.len())
+                None
             }
             Err(broadcast::error::RecvError::Closed) => break,
         };
-        if out.receiver_count() > 0 {
-            for p in prepared {
-                let _ = out.send(Arc::new(p));
-            }
+        let prepared = {
+            let mut st = lock(&state);
+            // Read under the lock: a client connecting after it snapshots a state holding `msg`.
+            let live = out.receiver_count() > 0;
+            st.next(msg.as_deref(), &replay, &instruments, live, || {
+                backbone.len()
+            })
+        };
+        for p in prepared {
+            let _ = out.send(Arc::new(p));
         }
     }
 }
@@ -1438,7 +1460,7 @@ pub async fn bind(addr: &str) -> Result<TcpListener> {
     Ok(listener)
 }
 
-/// Never returns an accept error: `main`'s `select!` would exit the process over it.
+/// Never returns an accept error: `main` would leave this sink off until restart over it.
 pub async fn serve(
     listener: TcpListener,
     tx: broadcast::Sender<Arc<FeedMessage>>,
@@ -1656,6 +1678,8 @@ mod tests {
         state: Mutex<State>,
         replay: BookSnapshot,
         catalog: InstrumentSnapshot,
+        /// Whether a client is connected.
+        live: std::cell::Cell<bool>,
     }
 
     impl Stage {
@@ -1673,6 +1697,7 @@ mod tests {
                 state: Default::default(),
                 replay: Arc::new(Mutex::new(BookReplay::default())),
                 catalog,
+                live: true.into(),
             }
         }
 
@@ -1684,7 +1709,7 @@ mod tests {
 
         /// The stage reading `msg`, or a gap, with `queued` more behind it.
         fn read(&self, msg: Option<&FeedMessage>, queued: usize) -> Vec<Prepared> {
-            lock(&self.state).next(msg, &self.replay, &self.catalog, || queued)
+            lock(&self.state).next(msg, &self.replay, &self.catalog, self.live.get(), || queued)
         }
 
         /// The arbiter's half of a publish alone: what a lagging stage has not read yet.
@@ -2563,7 +2588,7 @@ mod tests {
             // A new book re-reads at its first close, and a gap re-reads every book.
             let trigger = (!gap).then_some(&opening);
             p.extend(
-                lock(&stage.state).next(trigger, &stage.replay, &stage.catalog, || {
+                lock(&stage.state).next(trigger, &stage.replay, &stage.catalog, true, || {
                     racing.iter().for_each(|m| stage.publish(m));
                     0
                 }),
@@ -2580,6 +2605,136 @@ mod tests {
                 replay_levels(&stage.replay, &key(1), TICKER)
             );
         }
+    }
+
+    /// Frames with the send time, the one field two clients' copies may differ in, removed.
+    fn unsent(mut frames: Vec<Value>) -> Vec<Value> {
+        for f in &mut frames {
+            f.as_object_mut().unwrap().remove("sending_ts_ms");
+        }
+        frames
+    }
+
+    /// Apply each book frame to its market's book, as a client without `use_yes_price` does.
+    fn apply_books(books: &mut BTreeMap<String, Client>, frames: &[Value]) {
+        for f in frames {
+            if f["type"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("orderbook_"))
+            {
+                let ticker = f["msg"]["market_ticker"].as_str().unwrap();
+                books.entry(ticker.into()).or_default().apply(f, false);
+            }
+        }
+    }
+
+    fn held(books: &BTreeMap<String, Client>) -> BTreeMap<String, Levels> {
+        books.iter().map(|(t, c)| (t.clone(), c.levels())).collect()
+    }
+
+    fn event(id: u32, changes: Vec<BookChange>, last: bool) -> FeedMessage {
+        FeedMessage::Book(batch(id, changes, last))
+    }
+
+    fn update(side: BookSide, price: f64, size: f64) -> BookChange {
+        change(BookAction::Update, side, price, size)
+    }
+
+    /// A client connecting after idle traffic, in the middle of an event, is sent exactly what a
+    /// client on a stage that always had one is, and holds the books one connected throughout does.
+    #[test]
+    fn a_client_after_idle_traffic_is_sent_what_one_connected_throughout_is() {
+        let (always, idle) = (Stage::new(), Stage::new());
+        idle.live.set(false);
+        second_host(&always);
+        second_host(&idle);
+        let subscribe = j!({"id": 1, "cmd": "subscribe", "params": {"channels": ["orderbook_delta", "ticker", "trade"], "market_tickers": [TICKER, OTHER], "send_initial_snapshot": true}});
+        let mut throughout = Session::default();
+        let mut held_throughout = BTreeMap::new();
+        let sent = command(&mut throughout, &always, subscribe.clone());
+        apply_books(&mut held_throughout, &sent);
+
+        let before: [fn(&Stage) -> Vec<Prepared>; 12] = [
+            |s| s.rebaseline(1, &[(0.39, 5.0), (0.40, 10.0)], &[(0.45, 4.0)]),
+            |s| s.rebaseline(2, &[(0.20, 1.0)], &[(0.80, 2.0)]),
+            |s| s.feed(event(1, vec![update(BookSide::Bid, 0.41, 2.0)], true)),
+            |s| s.feed(FeedMessage::Trade(trade(1, Side::Buy, 4_500, 300))),
+            |s| s.feed(FeedMessage::Quote(quote(1, (4_100, 200), (4_500, 100)))),
+            |s| s.feed(FeedMessage::Quote(quote(9, (1, 1), (2, 1)))),
+            |s| {
+                s.publish(&event(2, vec![update(BookSide::Ask, 0.79, 3.0)], true));
+                s.read(None, 0)
+            },
+            |s| s.rebaseline(3, &[(0.40, 10.0)], &[(0.44, 1.0)]),
+            |s| {
+                lock(&s.state).books.get_mut(TICKER).unwrap().seen_ns = 0;
+                s.feed(event(3, vec![update(BookSide::Bid, 0.42, 1.0)], true))
+            },
+            |s| lock(&s.state).evict_oldest().into_iter().collect(),
+            |s| s.feed(event(3, vec![update(BookSide::Ask, 0.46, 2.0)], true)),
+            |s| {
+                let lifted = change(BookAction::Delete, BookSide::Ask, 0.44, 0.0);
+                s.feed(event(3, vec![lifted], false))
+            },
+        ];
+        for step in before {
+            let (sent, _) = (step(&always), step(&idle));
+            apply_books(&mut held_throughout, &deliver(&mut throughout, &sent));
+        }
+
+        idle.live.set(true);
+        let (mut late, mut reference) = (Session::default(), Session::default());
+        let first = command(&mut late, &idle, subscribe.clone());
+        assert_eq!(
+            unsent(first.clone()),
+            unsent(command(&mut reference, &always, subscribe))
+        );
+        let mut held_late = BTreeMap::new();
+        apply_books(&mut held_late, &first);
+        assert_eq!(held(&held_late), held(&held_throughout));
+        let perp = j!({"id": 2, "cmd": "update_subscription", "params": {"sid": 1, "action": "add_markets", "market_tickers": [PERP]}});
+        assert_eq!(
+            unsent(command(&mut late, &idle, perp.clone())),
+            unsent(command(&mut reference, &always, perp))
+        );
+
+        let after: [fn(&Stage) -> Vec<Prepared>; 5] = [
+            |s| s.feed(event(3, vec![update(BookSide::Ask, 0.47, 1.0)], true)),
+            |s| s.feed(event(2, vec![update(BookSide::Bid, 0.21, 4.0)], true)),
+            |s| s.feed(FeedMessage::Trade(trade(1, Side::Sell, 4_200, 100))),
+            |s| s.feed(FeedMessage::Quote(quote(1, (4_200, 200), (4_600, 100)))),
+            |s| s.rebaseline(3, &[(0.30, 1.0)], &[(0.60, 1.0)]),
+        ];
+        for step in after {
+            let (sent, folded) = (step(&always), step(&idle));
+            let to_late = deliver(&mut late, &folded);
+            assert_eq!(
+                unsent(to_late.clone()),
+                unsent(deliver(&mut reference, &sent))
+            );
+            apply_books(&mut held_late, &to_late);
+            apply_books(&mut held_throughout, &deliver(&mut throughout, &sent));
+            assert_eq!(held(&held_late), held(&held_throughout));
+        }
+    }
+
+    /// No client, no frame: quotes, prints, book events, a gap and an eviction render nothing.
+    #[test]
+    fn an_idle_stage_renders_nothing() {
+        let stage = Stage::new();
+        stage.live.set(false);
+        let mut rendered = stage.rebaseline(1, &[(0.40, 10.0)], &[(0.45, 4.0)]);
+        rendered.extend(stage.feed(event(1, vec![update(BookSide::Bid, 0.41, 1.0)], true)));
+        rendered.extend(stage.feed(FeedMessage::Quote(quote(1, (4_100, 100), (4_500, 400)))));
+        rendered.extend(stage.feed(FeedMessage::Trade(trade(1, Side::Buy, 4_500, 100))));
+        rendered.extend(stage.read(None, 0));
+        rendered.extend(lock(&stage.state).evict_oldest());
+        assert!(rendered.is_empty());
+        assert_eq!(
+            lock(&stage.state).clock,
+            3,
+            "each change still takes a clock"
+        );
     }
 
     #[test]
@@ -2931,6 +3086,122 @@ mod tests {
             &deliver(&mut s, &p)[0],
             include_str!("../../tests/fixtures/kalshi_ticker_golden.json"),
         );
+    }
+
+    /// Not a regression guard: the stage's per-message cost with and without a client connected.
+    /// Run with `cargo test --release -- --ignored measure_the_idle_cost --nocapture`.
+    #[test]
+    #[ignore = "measurement, not an assertion"]
+    fn measure_the_idle_cost() {
+        const MARKETS: u32 = 256;
+        const MESSAGES: usize = 200_000;
+        struct Rng(u64);
+        impl Rng {
+            fn below(&mut self, n: u64) -> u64 {
+                self.0 ^= self.0 << 13;
+                self.0 ^= self.0 >> 7;
+                self.0 ^= self.0 << 17;
+                self.0 % n
+            }
+        }
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        let named = |id: u32| -> Arc<str> { format!("KXMEASURE-{id}").into() };
+        let book_msg = |id: u32, changes| {
+            let mut b = batch(id, changes, true);
+            b.symbol = named(id);
+            FeedMessage::Book(b)
+        };
+        let warm = || {
+            let stage = Stage::new();
+            for id in 100..100 + MARKETS {
+                let i = instrument(id, &named(id), PREDICTION_BINARY, (-4, -2));
+                lock(&stage.catalog).insert(key(id), i);
+                let mut changes = vec![change(BookAction::Clear, BookSide::Both, 0.0, 0.0)];
+                for l in 0..10 {
+                    let (bid, ask) = (0.30 + f64::from(l) / 100.0, 0.41 + f64::from(l) / 100.0);
+                    changes.push(change(BookAction::Update, BookSide::Bid, bid, 10.0));
+                    changes.push(change(BookAction::Update, BookSide::Ask, ask, 10.0));
+                }
+                stage.feed(book_msg(id, changes));
+            }
+            stage
+        };
+        // One market's book event, quote or print, at prices inside its resting levels.
+        let message = |rng: &mut Rng, kind: u64| {
+            let id = 100 + rng.below(u64::from(MARKETS)) as u32;
+            match kind {
+                0 => {
+                    let (side, base) = if rng.below(2) == 0 {
+                        (BookSide::Bid, 30)
+                    } else {
+                        (BookSide::Ask, 41)
+                    };
+                    let price = (base + rng.below(10)) as f64 / 100.0;
+                    let size = rng.below(20) as f64;
+                    let action = if size == 0.0 {
+                        BookAction::Delete
+                    } else {
+                        BookAction::Update
+                    };
+                    book_msg(id, vec![change(action, side, price, size)])
+                }
+                1 => {
+                    let mut q = quote(id, (3_900, 1_000 + rng.below(5_000)), (4_100, 500));
+                    q.symbol = named(id);
+                    FeedMessage::Quote(q)
+                }
+                _ => {
+                    let side = if rng.below(2) == 0 {
+                        Side::Buy
+                    } else {
+                        Side::Sell
+                    };
+                    let mut t = trade(id, side, 3_900 + rng.below(200) as i64, 100);
+                    t.symbol = named(id);
+                    FeedMessage::Trade(t)
+                }
+            }
+        };
+        let mixes: [(&str, [u64; 3]); 4] = [
+            ("book events", [1, 0, 0]),
+            ("quotes", [0, 1, 0]),
+            ("trades", [0, 0, 1]),
+            ("mix 60/30/10", [6, 3, 1]),
+        ];
+        for (name, weights) in mixes {
+            let total: u64 = weights.iter().sum();
+            let msgs: Vec<FeedMessage> = (0..MESSAGES)
+                .map(|_| {
+                    let r = rng.below(total);
+                    let kind = if r < weights[0] {
+                        0
+                    } else if r < weights[0] + weights[1] {
+                        1
+                    } else {
+                        2
+                    };
+                    message(&mut rng, kind)
+                })
+                .collect();
+            for live in [false, true] {
+                let mut runs: Vec<Duration> = (0..7)
+                    .map(|_| {
+                        let stage = warm();
+                        stage.live.set(live);
+                        let t = std::time::Instant::now();
+                        for m in &msgs {
+                            let _ = stage.read(Some(m), 0);
+                        }
+                        t.elapsed() / MESSAGES as u32
+                    })
+                    .collect();
+                runs.sort();
+                println!(
+                    "{name:>14}, live={live:<5}: median {:?}/msg (min {:?}, max {:?})",
+                    runs[3], runs[0], runs[6]
+                );
+            }
+        }
     }
 
     // --- over a socket ---

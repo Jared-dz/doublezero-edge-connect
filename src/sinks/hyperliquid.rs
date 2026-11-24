@@ -1,6 +1,6 @@
 //! Hyperliquid-compatible WebSocket sink: re-serve our reconstructed order book, top-of-book quote
 //! and tape in **Hyperliquid's own schema**, so an existing Hyperliquid client consumes edge-connect
-//! by pointing its WebSocket endpoint here. Off by default (`--hl-ws-bind`).
+//! by pointing its WebSocket endpoint here. On by default at loopback (`--hl-ws-bind`).
 //!
 //! This is a **rendering, not a second pipeline**: it holds no ingest state, adds no dedup identity
 //! and influences no arbitration. It reads the same broadcast `sinks::ws` reads plus the shared
@@ -1017,10 +1017,8 @@ pub async fn serve(
         wanted.clone(),
     ));
     loop {
-        // Never propagate an accept error: this task's `Err` reaches `main`'s `select!` and would
-        // exit the process — tunnel, receivers and every other sink with it — over a transient
-        // `ECONNABORTED`/`EMFILE` on an opt-in compatibility port. That is the same outcome the
-        // non-fatal bind above exists to avoid.
+        // Never propagate an accept error: `main` would leave this sink off until restart over a
+        // transient `ECONNABORTED`/`EMFILE`.
         let (stream, peer) = match listener.accept().await {
             Ok(pair) => pair,
             Err(e) => {

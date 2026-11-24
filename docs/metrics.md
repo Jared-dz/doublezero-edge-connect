@@ -241,6 +241,14 @@ Recorded by the WebSocket sink (`src/sinks/ws.rs`).
 | `dz_ws_rate_limited_total` | counter | — | Clients disconnected for exceeding the inbound rate limit. |
 | `dz_ws_idle_timeout_total` | counter | — | Clients reaped for crossing the idle timeout. |
 
+## Venue-compatible sinks
+
+Each sink's own series are listed with it in [Output sinks](output-sinks.md).
+
+| Metric | Type | Labels | Meaning |
+|--------|------|--------|---------|
+| `dz_venue_sink_exits_total` | counter | `sink` | Times a sink's task ended (a panic, an error or a return), by `sink` (`hyperliquid`/`binance`/`kalshi`). That sink stays off until restart while the process and its tunnel keep running, so any increase is a sink down. |
+
 ## Public WS inputs
 
 Recorded by the optional public WebSocket backstops (Hyperliquid `src/ingest/ws_input.rs`, Phoenix

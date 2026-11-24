@@ -55,7 +55,8 @@ hands everything to the **subscription reconciler** (`ingest::reconcile`), which
 activation authority: it decides *which* of those feeds (plus the WS sink and the shred forwarder)
 actually run, based on what the host is subscribed to. `main.rs`'s top-level `select!` then awaits
 the reconciler plus the independently-spawned public WS inputs and metrics endpoint; the
-process exits only if one of those tasks panics.
+process exits only if one of those tasks panics. A venue-compatible sink whose task ends is logged,
+counted (`dz_venue_sink_exits_total`) and left off.
 
 **Activation is subscription-driven and dynamic** (`ingest::reconcile` + `ingest::subscriptions`):
 the reconciler polls the host's multicast subscriptions from `doublezero status --json` every
@@ -88,9 +89,9 @@ Modules are grouped by role under `src/`:
 - **`sinks/`** — the output features, each off the hot path so one never affects another: `ws`
   (WebSocket, on by default at loopback), `api` (read-only `/v1` query API), `metrics` (Prometheus `/metrics`,
   off by default), `admin` (the one mutation path in this crate — see below), `hyperliquid` (the
-  same data in Hyperliquid's own schema, off by default), `binance` (Binance's quotes and trades in
-  Binance's own schema, off by default) and `kalshi` (Kalshi's event contracts in Kalshi's own
-  schema, off by default). A new feature is a sibling module here + a spawn in `main.rs`.
+  same data in Hyperliquid's own schema, on by default at loopback), `binance` (Binance's quotes and trades in
+  Binance's own schema, on by default at loopback) and `kalshi` (Kalshi's event contracts in Kalshi's own
+  schema, on by default at loopback). A new feature is a sibling module here + a spawn in `main.rs`.
 - **`shred/`** — the Solana **shred forwarder** (peer of `ingest/`/`sinks/`, separate from the
   market-data pipeline — no `FeedMessage`, no WebSocket, no market-data decode). Joins the DoubleZero
   `edge-solana-*` shred multicast groups, combines them, and fans each raw datagram out to local
@@ -1054,7 +1055,7 @@ Modules are grouped by role under `src/`:
   listener is bound via `ws::bind()` (separate from `ws::serve()`) so the reconciler can treat a bind
   failure as non-fatal — a taken port disables the sink but leaves the tunnel running — and activate
   the sink only once a market-data feed is subscribed.
-- **`sinks/hyperliquid.rs`** — the **Hyperliquid-compatible** sink (`--hl-ws-bind`, off by default,
+- **`sinks/hyperliquid.rs`** — the **Hyperliquid-compatible** sink (`--hl-ws-bind`, on by default at `127.0.0.1:8082`,
   **not** subscription-gated): the same broadcast re-served in *Hyperliquid's* schema so an existing
   Hyperliquid client needs only a URL change. A **rendering, not a second pipeline** — no ingest state,
   no dedup identity, no arbitration input — so it is documented in `docs/output-sinks.md` and **never**
@@ -1106,8 +1107,8 @@ Modules are grouped by role under `src/`:
   variants' meaning that exists, but it consumes the node's raw book diffs rather than this channel:
   **there is no reference `l4Book` consumer in either source**, so nothing here should be written as
   though a particular client's behaviour were known.
-  The accept loop never propagates an error (this task's `Err` reaches `main`'s `select!` and would exit
-  the process; unlike `ws`'s, no reconciler respawns it), and the client limits are constants, of which
+  The accept loop never propagates an error (an ended task leaves this sink off until
+  restart: unlike `ws`'s, no reconciler respawns it), and the client limits are constants, of which
   the inbound rate cap is the load-bearing one — a subscribe frame is tens of bytes and costs a whole
   book to answer, and the `subs.contains` guard cannot see an unsubscribe-then-resubscribe loop. A
   WebSocket `Ping` is charged against that cap too (it costs an outbound `Pong`), and crossing it sends
@@ -1115,7 +1116,7 @@ Modules are grouped by role under `src/`:
   A lagging client is re-bootstrapped on `l4Book` at most once per `REBOOTSTRAP_MIN_INTERVAL`, since
   that frame is the most expensive the sink produces and is what makes a struggling client lag again;
   a second gap inside the window ends the connection.
-- **`sinks/binance.rs`** — the **Binance-compatible** sink (`--binance-ws-bind`, off by default, **not**
+- **`sinks/binance.rs`** — the **Binance-compatible** sink (`--binance-ws-bind`, on by default at `127.0.0.1:8083`, **not**
   subscription-gated): Binance's `quote`/`trade` re-served as Binance's `bookTicker`, `aggTrade` and
   `trade`, so a Binance client needs only a new WebSocket base URL. A rendering like `hyperliquid`'s,
   documented in `docs/output-sinks.md` and never in PROTOCOL.md, and it reuses that sink's limits and
@@ -1148,7 +1149,7 @@ Modules are grouped by role under `src/`:
   prints, so other feeds' traffic wakes none of them, and each `(kind, framing)` of a message is
   rendered at most once, by the first client that sends it (`Prepared`): N clients cost one render
   and an unsubscribed stream none.
-- **`sinks/kalshi.rs`** — the **Kalshi-compatible** sink (`--kalshi-ws-bind`, off by default, **not**
+- **`sinks/kalshi.rs`** — the **Kalshi-compatible** sink (`--kalshi-ws-bind`, on by default at `127.0.0.1:8084`, **not**
   subscription-gated): Source ID 3's event contracts in Kalshi's trade-API WebSocket protocol at
   `/trade-api/ws/v2`. A rendering like `hyperliquid`'s, documented in `docs/output-sinks.md`, never
   PROTOCOL.md; Kalshi's docs are the authority and NautilusTrader 2.0.0rc9's data client the
@@ -1174,7 +1175,11 @@ Modules are grouped by role under `src/`:
   connection but the idle reap**: Nautilus does not reconnect, so a lagging client gets one skipped
   `seq` on its book and trade subscriptions and an over-rate command gets code 27. ⚠️ **Every `error`
   makes Nautilus gap all its books**, and an error on a subscribe fails its `connect()`, which is
-  why `market_lifecycle_v2`, subscribed on every connect, is acknowledged and silent. The signed
+  why `market_lifecycle_v2`, subscribed on every connect, is acknowledged and silent. ⚠️ **With no
+  client connected the stage still folds** books, the `clock`, `tops` and the gate, since a late
+  client's snapshot and ticker replay are read from them; it renders nothing. Whether a client is
+  connected is read under the stage's lock, so one connecting after an idle fold snapshots a state
+  that holds it. The signed
   `KALSHI-ACCESS-*` headers are never read, so never logged (`tests/kalshi_sink_logging.rs`).
 - **`sinks/api.rs`**'s `/v1/products` rows carry `book_complete` (the replay entry's `baselined()`,
   absent for a market with no book), read off the same `BookSnapshot` lookup `feed_kind` already makes.
@@ -1349,9 +1354,9 @@ Modules are grouped by role under `src/`:
   (output) is *configured* by a non-empty `--ws-bind` (`--ws-bind ""` disables it outright) but only
   *activated* when a market-data feed is subscribed; the public WS input is **off** by
   default (on when `--ws-input-coins` is non-empty) and is **not** subscription-gated, and neither are
-  the Hyperliquid-, Binance- and Kalshi-compatible sinks (**off**, on when
+  the Hyperliquid-, Binance- and Kalshi-compatible sinks (**on at loopback**, off when
   `--hl-ws-bind`/`--binance-ws-bind`/`--kalshi-ws-bind` is
-  non-empty) — each renders whatever the broadcast carries, so it has no group of its own to be
+  empty) — each renders whatever the broadcast carries, so it has no group of its own to be
   subscribed to. README has the
   full activation tables.
 - No TLS on the **service surface** — the WebSocket output and multicast input target a trusted/local

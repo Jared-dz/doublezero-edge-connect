@@ -9,9 +9,9 @@ sink can't stall ingest. Every flag also reads from the env var shown.
 |------|---------|------------------|--------------------|
 | **WebSocket** (`sinks::ws`) | **on when subscribed** | configured unless `--ws-bind` is empty (`--ws-bind ""` disables it); *activated* only when ≥1 market-data feed is subscribed | `--ws-bind` (`WS_BIND`, default `127.0.0.1:8081`) + the `--ws-*` limits |
 | **Query API** (`sinks::api`) | **on when subscribed** | configured unless `--api-bind` is empty (`--api-bind ""` disables it); *activated* only when ≥1 market-data feed is subscribed — same condition as the WebSocket sink | `--api-bind` (`DZ_API_BIND`, default `127.0.0.1:9099`) |
-| **Hyperliquid-compatible** (`sinks::hyperliquid`) | **off** | on when `--hl-ws-bind` is non-empty; **not** subscription-gated | `--hl-ws-bind` (`HL_WS_BIND`, default empty) |
-| **Binance-compatible** (`sinks::binance`) | **off** | on when `--binance-ws-bind` is non-empty; **not** subscription-gated | `--binance-ws-bind` (`BINANCE_WS_BIND`, default empty) |
-| **Kalshi-compatible** (`sinks::kalshi`) | **off** | on when `--kalshi-ws-bind` is non-empty; **not** subscription-gated | `--kalshi-ws-bind` (`KALSHI_WS_BIND`, default empty) |
+| **Hyperliquid-compatible** (`sinks::hyperliquid`) | **on, at loopback** | on unless `--hl-ws-bind` is empty; **not** subscription-gated | `--hl-ws-bind` (`HL_WS_BIND`, default `127.0.0.1:8082`) |
+| **Binance-compatible** (`sinks::binance`) | **on, at loopback** | on unless `--binance-ws-bind` is empty; **not** subscription-gated | `--binance-ws-bind` (`BINANCE_WS_BIND`, default `127.0.0.1:8083`) |
+| **Kalshi-compatible** (`sinks::kalshi`) | **on, at loopback** | on unless `--kalshi-ws-bind` is empty; **not** subscription-gated | `--kalshi-ws-bind` (`KALSHI_WS_BIND`, default `127.0.0.1:8084`) |
 | **Metrics** (`sinks::metrics`) | **off** | on when `--metrics-bind` is non-empty | `--metrics-bind` (`METRICS_BIND`, default empty) |
 
 The metrics endpoint is active when its key config value is non-empty. The WebSocket sink and the
@@ -24,15 +24,19 @@ or the DoubleZero tunnel. Running from source without the `doublezero` CLI, gati
 both sinks are active whenever configured. See the main README for the reconciler flags
 (`--subscription-refresh-secs`, `--subscription-gating-disable`).
 
+The Hyperliquid-, Binance- and Kalshi-compatible sinks also ship a non-empty default bind, at loopback, but are not gated: each binds once at startup, so a shreds-only host listens on `8082`-`8084` too, and a taken port leaves that sink off, with a warning, until the next restart. None of them renders a frame while no client is connected.
+
 ## Hyperliquid-compatible sink
 
 Serves the same market data in **Hyperliquid's own WebSocket schema** instead of
 [PROTOCOL.md](../PROTOCOL.md)'s, so an existing Hyperliquid client consumes edge-connect by changing
-one URL. It is **off by default**; give it a bind address to turn it on:
+one URL. It is **on by default at loopback** (`ws://127.0.0.1:8082`), so it needs no flag:
 
 ```bash
-./target/release/doublezero-edge-connect --iface doublezero1 --hl-ws-bind 0.0.0.0:8082
+./target/release/doublezero-edge-connect --iface doublezero1
 ```
+
+It has no TLS or authentication, so a wildcard bind serves your feeds to anyone who can reach the port. For a client on another host, set `--hl-ws-bind 0.0.0.0:8082` (`HL_WS_BIND`) and firewall the port. An empty value turns the sink off.
 
 It is a **rendering, not a second protocol**: it holds no book of its own, adds no deduplication and
 influences no arbitration, reading the same internal broadcast the normalized sink reads. Nothing
@@ -134,11 +138,13 @@ rest of the service surface.
 
 ## Binance-compatible sink
 
-Serves the Binance feeds' quotes and trades in **Binance's own market-stream schema**, so a Binance client, such as NautilusTrader's stock Binance data clients, consumes edge-connect by changing its WebSocket base URL. It is **off by default**; give it a bind address to turn it on:
+Serves the Binance feeds' quotes and trades in **Binance's own market-stream schema**, so a Binance client, such as NautilusTrader's stock Binance data clients, consumes edge-connect by changing its WebSocket base URL. It is **on by default at loopback** (`ws://127.0.0.1:8083`), so it needs no flag:
 
 ```bash
-./target/release/doublezero-edge-connect --iface doublezero1 --binance-ws-bind 0.0.0.0:8083
+./target/release/doublezero-edge-connect --iface doublezero1
 ```
+
+It has no TLS or authentication, so a wildcard bind serves your feeds to anyone who can reach the port. For a client on another host, set `--binance-ws-bind 0.0.0.0:8083` (`BINANCE_WS_BIND`) and firewall the port. An empty value turns the sink off.
 
 Like the Hyperliquid sink, it is a rendering, not a second protocol. Nothing about it is in PROTOCOL.md, it is not subscription-gated, and a bind failure disables it with a warning.
 
@@ -220,11 +226,13 @@ Client limits are the Hyperliquid sink's: 64 clients, 600 inbound frames per min
 
 ## Kalshi-compatible sink
 
-Serves Kalshi's event contracts in **Kalshi's own trade-API WebSocket protocol**, so a Kalshi client, such as NautilusTrader 2.0's Kalshi data client, reads edge-connect by changing its WebSocket URL. It is **off by default**; give it a bind address to turn it on:
+Serves Kalshi's event contracts in **Kalshi's own trade-API WebSocket protocol**, so a Kalshi client, such as NautilusTrader 2.0's Kalshi data client, reads edge-connect by changing its WebSocket URL. It is **on by default at loopback** (`ws://127.0.0.1:8084`), so it needs no flag:
 
 ```bash
-./target/release/doublezero-edge-connect --iface doublezero1 --kalshi-ws-bind 0.0.0.0:8084
+./target/release/doublezero-edge-connect --iface doublezero1
 ```
+
+It has no TLS or authentication, so a wildcard bind serves your feeds to anyone who can reach the port. For a client on another host, set `--kalshi-ws-bind 0.0.0.0:8084` (`KALSHI_WS_BIND`) and firewall the port. An empty value turns the sink off.
 
 Like the Hyperliquid sink, it is a rendering, not a second protocol. Nothing about it is in PROTOCOL.md, it is not subscription-gated, and a bind failure disables it with a warning. Connect to `ws://<host>:8084/trade-api/ws/v2`, Kalshi's own path; any other path gets a 404. The handshake's signed `KALSHI-ACCESS-*` headers are accepted, never checked and never logged.
 

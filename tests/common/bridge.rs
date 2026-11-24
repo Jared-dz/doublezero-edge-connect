@@ -53,13 +53,19 @@ impl Bridge {
             "--ws-bind",
             &ws_addr,
             "--subscription-gating-disable",
-            // Both off, because their defaults are *fixed* loopback ports (9099 and 9098) while
-            // `--ws-bind` is per test. `--test-threads=1` serializes within one test binary but not
-            // across them, and cargo runs the binaries concurrently, so any two spawned bridges —
-            // in `e2e`, `ws_input_arbitrage`, `phoenix_arbitrage` — race for those two ports and
+            // All off, because their defaults are *fixed* loopback ports (9099, 9098, 8082-8084)
+            // while `--ws-bind` is per test. `--test-threads=1` serializes within one test binary
+            // but not across them, and cargo runs the binaries concurrently, so any two spawned
+            // bridges — in `e2e`, `ws_input_arbitrage`, `phoenix_arbitrage` — race for those ports and
             // whichever loses reports a bind failure. A test that wants one passes its own bind on
             // a port it owns in `extra_args`, which replaces this one.
             "--admin-bind",
+            "",
+            "--hl-ws-bind",
+            "",
+            "--binance-ws-bind",
+            "",
+            "--kalshi-ws-bind",
             "",
             // Pinned rather than the compiled-in copy, which tracks the hosted document and moves
             // with it: the replayed fixtures are sent to the groups and ports `replay.rs` names,

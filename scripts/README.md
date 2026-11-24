@@ -70,15 +70,15 @@ per-feature flags in the script. `tests/scripts/passthrough.bats` fails when a n
 missing from the scripts' `PASSTHROUGH` allowlist.
 
 Common ones: `DZ_IFACE`, `DZ_RECV_BUF`, `WS_BIND` and the `WS_*` limits, `HL_WS_BIND` (the
-Hyperliquid-compatible sink, whose URL the installer prints when set), `BINANCE_WS_BIND` (the
-Binance-compatible sink, whose USD-M and spot URLs it prints), `KALSHI_WS_BIND` (the
-Kalshi-compatible sink, whose `/trade-api/ws/v2` URL it prints), `RUST_LOG`, and the shred
+Hyperliquid-compatible sink, at `127.0.0.1:8082` unless set, whose URL the installer prints), `BINANCE_WS_BIND` (the
+Binance-compatible sink, at `127.0.0.1:8083` unless set, whose USD-M and spot URLs it prints), `KALSHI_WS_BIND` (the
+Kalshi-compatible sink, at `127.0.0.1:8084` unless set, whose `/trade-api/ws/v2` URL it prints), `RUST_LOG`, and the shred
 forwarder's `DZ_SHRED_*` (notably `DZ_SHRED_DEDUP_MODE` — `dedup` by default, `sigverify` / `none`
 to change — and `DZ_SHRED_RPC_URL` for sigverify mode). See the bridge's `Args` in
 [`../src/main.rs`](../src/main.rs) and the sink/shred/input tables in the
 [`docs/`](../docs/) reference for the full list and defaults.
 
-Only **non-empty** values are forwarded, except `WS_BIND`: `WS_BIND=""` disables the WebSocket sink.
+Only **non-empty** values are forwarded, except the sink binds: `WS_BIND=""`, `HL_WS_BIND=""`, `BINANCE_WS_BIND=""` or `KALSHI_WS_BIND=""` disables that sink.
 
 ## Examples
 

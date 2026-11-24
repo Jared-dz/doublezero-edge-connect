@@ -260,15 +260,11 @@ Any engine that speaks WebSocket + JSON consumes it with a thin (~50-100 line) a
 wire contract is in **[PROTOCOL.md](PROTOCOL.md)** (see
 [Consuming the feed](PROTOCOL.md#consuming-the-feed-any-engine)).
 
-Already have a **Hyperliquid** client? `HL_WS_BIND=0.0.0.0:8082` turns on a second sink that serves
-the same data in Hyperliquid's own schema (`l2Book`, `l4Book`, `trades`, `bbo`), so pointing that client's
-WebSocket endpoint at it needs no adapter work. Off by default; see
-[Output sinks](docs/output-sinks.md#hyperliquid-compatible-sink) for what it does and does not
-deliver.
+Already have a **Hyperliquid** client? A second sink serves the same data in Hyperliquid's own schema (`l2Book`, `l4Book`, `trades`, `bbo`) at `ws://127.0.0.1:8082`, so pointing that client's WebSocket endpoint at it needs no adapter work. On by default at loopback: `HL_WS_BIND=0.0.0.0:8082` serves a client on another host (no TLS or authentication: firewall the port), and `HL_WS_BIND=""` turns it off. See [Output sinks](docs/output-sinks.md#hyperliquid-compatible-sink) for what it does and does not deliver.
 
-Already have a **Binance** client, such as NautilusTrader's or CCXT's? `BINANCE_WS_BIND=0.0.0.0:8083` turns on a sink that serves the Binance feeds' quotes and trades in Binance's own schema (`bookTicker`, `aggTrade`, `trade`): USD-M perpetuals at `ws://<host>:8083/usdsm` and spot at `ws://<host>:8083/spot`. Off by default; see [Output sinks](docs/output-sinks.md#binance-compatible-sink) for the client configuration and what the feed cannot supply.
+Already have a **Binance** client, such as NautilusTrader's or CCXT's? A sink serves the Binance feeds' quotes and trades in Binance's own schema (`bookTicker`, `aggTrade`, `trade`): USD-M perpetuals at `ws://127.0.0.1:8083/usdsm` and spot at `ws://127.0.0.1:8083/spot`. On by default at loopback: `BINANCE_WS_BIND=0.0.0.0:8083` serves a client on another host (no TLS or authentication: firewall the port), and `BINANCE_WS_BIND=""` turns it off. See [Output sinks](docs/output-sinks.md#binance-compatible-sink) for the client configuration and what the feed cannot supply.
 
-Already have a **Kalshi** client, such as NautilusTrader's? `KALSHI_WS_BIND=0.0.0.0:8084` turns on a sink that serves Kalshi's event contracts in Kalshi's own trade-API schema (`orderbook_delta`, `ticker`, `trade`) at `ws://<host>:8084/trade-api/ws/v2`. Off by default; see [Output sinks](docs/output-sinks.md#kalshi-compatible-sink) for the client configuration and what the feed cannot supply.
+Already have a **Kalshi** client, such as NautilusTrader's? A sink serves Kalshi's event contracts in Kalshi's own trade-API schema (`orderbook_delta`, `ticker`, `trade`) at `ws://127.0.0.1:8084/trade-api/ws/v2`. On by default at loopback: `KALSHI_WS_BIND=0.0.0.0:8084` serves a client on another host (no TLS or authentication: firewall the port), and `KALSHI_WS_BIND=""` turns it off. See [Output sinks](docs/output-sinks.md#kalshi-compatible-sink) for the client configuration and what the feed cannot supply.
 
 ## Query market data (the `doublezero-edge` CLI)
 

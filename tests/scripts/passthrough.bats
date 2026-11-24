@@ -94,13 +94,6 @@ hl_listening() {
   ! grep -q 'Hyperliquid *: ws://' "$out"
 }
 
-@test "HL_WS_BIND unset: no Hyperliquid line" {
-  local out="$BATS_TEST_TMPDIR/out"
-  ( common_env; export DZ_INSTALL_CLI=0 DZ_SUBSCRIPTION_REFRESH_SECS=0
-    bash "$SCRIPTS_DIR/connect.sh" ) >"$out" 2>&1 || { echo "# exited $?"; sed 's/^/#   /' "$out"; false; }
-  ! grep -q 'Hyperliquid' "$out"
-}
-
 # binance_listening <bind>: make the stub bridge log a successful Binance bind.
 binance_listening() {
   local extra="$BATS_TEST_TMPDIR/binance-listening.log"
@@ -133,13 +126,6 @@ binance_listening() {
     bash "$SCRIPTS_DIR/connect.sh" ) >"$out" 2>&1 || { echo "# exited $?"; sed 's/^/#   /' "$out"; false; }
   grep -q 'Binance-compatible sink is NOT serving.*Address already in use' "$out" || { sed 's/^/#   /' "$out"; false; }
   ! grep -q 'Binance .*: ws://' "$out"
-}
-
-@test "BINANCE_WS_BIND unset: no Binance line" {
-  local out="$BATS_TEST_TMPDIR/out"
-  ( common_env; export DZ_INSTALL_CLI=0 DZ_SUBSCRIPTION_REFRESH_SECS=0
-    bash "$SCRIPTS_DIR/connect.sh" ) >"$out" 2>&1 || { echo "# exited $?"; sed 's/^/#   /' "$out"; false; }
-  ! grep -q 'Binance' "$out"
 }
 
 # run_on_host <script> <out> <addresses>: run an installer on a host whose `hostname -I` lists
@@ -223,4 +209,69 @@ kalshi_listening() {
     bash "$SCRIPTS_DIR/connect.sh" ) >"$out" 2>&1 || { echo "# exited $?"; sed 's/^/#   /' "$out"; false; }
   grep -q 'Kalshi-compatible sink is NOT serving.*Address already in use' "$out" || { sed 's/^/#   /' "$out"; false; }
   ! grep -q 'Kalshi *: ws://' "$out"
+}
+
+# venue_listening: make the stub bridge log all three venue sinks listening at their loopback defaults.
+venue_listening() {
+  local extra="$BATS_TEST_TMPDIR/venue-listening.log"
+  printf 'INFO doublezero_edge_connect::sinks::hyperliquid: Hyperliquid-compatible WebSocket sink listening bind=127.0.0.1:8082\n' >"$extra"
+  printf 'INFO doublezero_edge_connect::sinks::binance: Binance-compatible WebSocket sink listening bind=127.0.0.1:8083\n' >>"$extra"
+  printf 'INFO doublezero_edge_connect::sinks::kalshi: Kalshi-compatible WebSocket sink listening bind=127.0.0.1:8084\n' >>"$extra"
+  export DZ_TEST_DOCKER_LOG_EXTRA="$extra"
+}
+
+@test "venue sink binds unset: not relayed, and each sink's loopback URL is printed (all scripts)" {
+  for s in "${SCRIPTS[@]}"; do
+    : >"$DOCKER_LOG"
+    local out="$BATS_TEST_TMPDIR/$s.out"
+    ( common_env; export DZ_INSTALL_CLI=0 DZ_SUBSCRIPTION_REFRESH_SECS=0; unset HL_WS_BIND BINANCE_WS_BIND KALSHI_WS_BIND
+      venue_listening; bash "$SCRIPTS_DIR/$s.sh" ) >"$out" 2>&1 || { echo "# $s exited $?"; sed 's/^/#   /' "$out"; false; }
+    ! grep -Eq -- '-e (HL|BINANCE|KALSHI)_WS_BIND=' "$DOCKER_LOG" || { echo "# $s relayed an unset bind"; false; }
+    grep -q 'Hyperliquid *: ws://127.0.0.1:8082 ' "$out" \
+      && grep -q 'Binance USD-M *: ws://127.0.0.1:8083/usdsm ' "$out" \
+      && grep -q 'Binance spot *: ws://127.0.0.1:8083/spot' "$out" \
+      && grep -q 'Kalshi *: ws://127.0.0.1:8084/trade-api/ws/v2 ' "$out" \
+      || { echo "# $s:"; sed 's/^/#   /' "$out"; false; }
+  done
+}
+
+@test "venue sink binds set empty: relayed empty, and each sink is reported disabled (all scripts)" {
+  for s in "${SCRIPTS[@]}"; do
+    : >"$DOCKER_LOG"
+    local out="$BATS_TEST_TMPDIR/$s.out" run_line
+    ( common_env; export DZ_INSTALL_CLI=0 DZ_SUBSCRIPTION_REFRESH_SECS=0 HL_WS_BIND= BINANCE_WS_BIND= KALSHI_WS_BIND=
+      bash "$SCRIPTS_DIR/$s.sh" ) >"$out" 2>&1 || { echo "# $s exited $?"; sed 's/^/#   /' "$out"; false; }
+    run_line="$(grep '^docker run ' "$DOCKER_LOG")"
+    for v in HL_WS_BIND BINANCE_WS_BIND KALSHI_WS_BIND; do
+      [[ " $run_line " == *" -e $v= "* ]] || { echo "# $s did not relay $v empty"; false; }
+    done
+    grep -q 'Hyperliquid-compatible sink is disabled (HL_WS_BIND="")' "$out" \
+      && grep -q 'Binance-compatible sink is disabled (BINANCE_WS_BIND="")' "$out" \
+      && grep -q 'Kalshi-compatible sink is disabled (KALSHI_WS_BIND="")' "$out" \
+      || { echo "# $s:"; sed 's/^/#   /' "$out"; false; }
+    ! grep -q 'ws://.*:808[234]' "$out" || { echo "# $s printed a disabled sink's URL"; false; }
+  done
+}
+
+@test "venue sinks' listening lines hidden (RUST_LOG=warn): a bound port confirms each, a free one warns (all scripts)" {
+  printf '#!/usr/bin/env bash\nfor p in 8082 8083 8084; do echo "LISTEN 0 128 127.0.0.1:$p 0.0.0.0:*"; done\n' >"$STUB_BIN/ss"
+  chmod +x "$STUB_BIN/ss"
+  for s in "${SCRIPTS[@]}"; do
+    local out="$BATS_TEST_TMPDIR/$s.out"
+    ( common_env; export DZ_INSTALL_CLI=0 DZ_SUBSCRIPTION_REFRESH_SECS=0; unset HL_WS_BIND BINANCE_WS_BIND KALSHI_WS_BIND
+      bash "$SCRIPTS_DIR/$s.sh" ) >"$out" 2>&1 || { echo "# $s exited $?"; sed 's/^/#   /' "$out"; false; }
+    grep -q 'Hyperliquid *: ws://127.0.0.1:8082 ' "$out" \
+      && grep -q 'Binance spot *: ws://127.0.0.1:8083/spot' "$out" \
+      && grep -q 'Kalshi *: ws://127.0.0.1:8084/trade-api/ws/v2 ' "$out" \
+      && ! grep -q 'Could not confirm' "$out" \
+      || { echo "# $s, ports bound:"; sed 's/^/#   /' "$out"; false; }
+  done
+  ss_reports_free "$STUB_BIN"
+  for s in "${SCRIPTS[@]}"; do
+    local out="$BATS_TEST_TMPDIR/$s.out"
+    ( common_env; export DZ_INSTALL_CLI=0 DZ_SUBSCRIPTION_REFRESH_SECS=0; unset HL_WS_BIND BINANCE_WS_BIND KALSHI_WS_BIND
+      bash "$SCRIPTS_DIR/$s.sh" ) >"$out" 2>&1 || { echo "# $s exited $?"; sed 's/^/#   /' "$out"; false; }
+    [ "$(grep -c 'Could not confirm the .*-compatible sink' "$out")" -eq 3 ] && ! grep -q 'ws://127.0.0.1:808[234]' "$out" \
+      || { echo "# $s, ports free:"; sed 's/^/#   /' "$out"; false; }
+  done
 }
