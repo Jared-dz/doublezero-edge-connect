@@ -59,14 +59,9 @@ ARG DZ_BASE_IMAGE
 ARG DZ_BASE_DIGEST=
 ARG BUILD_VERSION=dev
 ARG BUILD_COMMIT=unknown
-# DZ_CLIENT_REPO / DZ_CLIENT_VERSION install the doublezero client (CLI + doublezerod) straight
-# from that environment's Cloudsmith release train over the base image's copy. The base image is
-# only republished when its own pipeline runs, and when it stops the variant ships a client the
-# ledger refuses: `doublezero:testnet` froze at 0.44.0 while testnet moved its minimum to 0.45.0,
-# and every connect then failed with "Your client version is no longer up to date". Installing
-# from the repo builders already use ties the image to the release, not to that pipeline. Empty
-# DZ_CLIENT_REPO (the default) keeps the base's client and builds exactly as before.
-# DZ_CLIENT_VERSION pins the exact deb (CI resolves it); empty takes the repo's latest.
+# DZ_CLIENT_REPO installs the doublezero client from that Cloudsmith repo over the base's copy,
+# because the base is republished only by hand. Empty keeps the base's client.
+# DZ_CLIENT_VERSION pins the deb; empty takes the repo's latest.
 ARG DZ_CLIENT_REPO=
 ARG DZ_CLIENT_VERSION=
 LABEL org.opencontainers.image.source="https://github.com/malbeclabs/doublezero-edge-connect" \

@@ -99,11 +99,6 @@ jobs:
       # owns :latest, and the Cloudsmith repo its doublezero client is installed
       # from (empty = keep the base image's client). Single source of truth,
       # shared with the poll workflow.
-      #
-      # testnet installs its client from doublezero-testnet because the
-      # doublezero:testnet base stopped being republished at 0.44.0 while the
-      # testnet ledger moved its minimum client to 0.45.0, so every image built
-      # on it was refused at connect. mainnet-beta's base is still published.
       - name: Resolve variant config
         id: cfg
         shell: bash
