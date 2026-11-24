@@ -60,7 +60,8 @@ ARG DZ_BASE_DIGEST=
 ARG BUILD_VERSION=dev
 ARG BUILD_COMMIT=unknown
 # DZ_CLIENT_REPO installs the doublezero client from that Cloudsmith repo over the base's copy,
-# because the base is republished only by hand. Empty keeps the base's client.
+# because the base is republished only by hand. The base must already list that repo. Empty keeps
+# the base's client.
 # DZ_CLIENT_VERSION pins the deb; empty takes the repo's latest.
 ARG DZ_CLIENT_REPO=
 ARG DZ_CLIENT_VERSION=
@@ -82,12 +83,8 @@ RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends iproute2 ca-certificates; \
     if [ -n "${DZ_CLIENT_REPO}" ]; then \
-      apt-get install -y --no-install-recommends curl; \
-      curl -1sLf "https://dl.cloudsmith.io/public/malbeclabs/${DZ_CLIENT_REPO}/setup.deb.sh" | bash; \
-      apt-get update; \
       apt-get install -y --no-install-recommends --allow-downgrades \
         "doublezero${DZ_CLIENT_VERSION:+=$DZ_CLIENT_VERSION}"; \
-      apt-get purge -y --auto-remove curl; \
       dpkg-query -W doublezero; \
     fi; \
     rm -rf /var/lib/apt/lists/*

@@ -67,7 +67,8 @@ The testnet image replaces the base's `doublezero` client with the latest one in
 `doublezero-testnet` Cloudsmith repo at build time, because the `doublezero:testnet` base is not
 republished with every client release. A local build does the same with
 `--build-arg DZ_CLIENT_REPO=doublezero-testnet` (add `--build-arg DZ_CLIENT_VERSION=<deb version>` to
-pin it); without that argument a build keeps the base image's client.
+pin it), and needs the `doublezero:testnet` base, which carries that repo's apt list; without that
+argument a build keeps the base image's client.
 
 > **No TLS.** edge-connect targets a trusted/local network (the same stance as the DoubleZero
 > overlay). Terminate TLS at a reverse proxy if you must expose it.
